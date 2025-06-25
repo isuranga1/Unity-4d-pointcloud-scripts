@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using SimpleJSON;
 using System.IO;
+using System;
 
 public class SMPLAnimationPlayer : MonoBehaviour
 {
@@ -23,8 +24,11 @@ public class SMPLAnimationPlayer : MonoBehaviour
     private bool isPlaying = false;
     private Transform[] bones;
     
+    // Variables to handle position and rotation offsets.
     private Vector3 modelBaseInitialPosition;
+    private Vector3 modelBaseInitialRotation;
     private Vector3 currentAdditionalOffset;
+    private float currentAdditionalRotationY;
     private Vector3 animationStartOffset;
 
     // SMPL bone mapping (24 joints)
@@ -59,6 +63,7 @@ public class SMPLAnimationPlayer : MonoBehaviour
 
         bones = skinnedMeshRenderer.bones;
         modelBaseInitialPosition = transform.localPosition;
+        modelBaseInitialRotation = transform.localEulerAngles;
     }
 
     void Update()
@@ -76,18 +81,24 @@ public class SMPLAnimationPlayer : MonoBehaviour
         }
     }
 
-    public void LoadAndPlayAnimation(string jsonFilePath, Vector3 additionalOffset)
+    public void LoadAndPlayAnimation(string jsonFilePath, Vector3 additionalOffset, float additionalRotationY)
     {
         this.currentAdditionalOffset = additionalOffset;
+        UpdateLiveRotation(additionalRotationY);
         string jsonText = File.ReadAllText(jsonFilePath);
         LoadAnimation(jsonText);
         Play();
     }
 
-    // *** NEW PUBLIC METHOD ***: Allows the UI to update the offset in real-time.
     public void UpdateLiveOffset(Vector3 newOffset)
     {
         this.currentAdditionalOffset = newOffset;
+    }
+    
+    public void UpdateLiveRotation(float newRotationY)
+    {
+        this.currentAdditionalRotationY = newRotationY;
+        transform.localEulerAngles = modelBaseInitialRotation + new Vector3(0, this.currentAdditionalRotationY, 0);
     }
 
     void LoadAnimation(string jsonText)
@@ -96,7 +107,6 @@ public class SMPLAnimationPlayer : MonoBehaviour
         {
             var json = JSON.Parse(jsonText);
             animData = new AnimationData();
-
             animData.fps = json["fps"];
             var transNode = json["trans"];
             var posesNode = json["poses"];
@@ -108,21 +118,12 @@ public class SMPLAnimationPlayer : MonoBehaviour
                 float jsonX = transNode[frame][0];
                 float jsonZ = transNode[frame][1]; 
                 float jsonY = transNode[frame][2]; 
-                
                 jsonY -= yOffset;
-
                 var mayaPos = new Vector3(jsonX, jsonZ, jsonY);
                 animData.translations[frame] = ConvertMayaToUnity(mayaPos);
             }
 
-            if (animData.frameCount > 0)
-            {
-                animationStartOffset = animData.translations[0];
-            }
-            else
-            {
-                animationStartOffset = Vector3.zero;
-            }
+            animationStartOffset = animData.frameCount > 0 ? animData.translations[0] : Vector3.zero;
             
             animData.poses = new Quaternion[animData.frameCount, 24];
             for (int frame = 0; frame < animData.frameCount; frame++)
@@ -140,30 +141,32 @@ public class SMPLAnimationPlayer : MonoBehaviour
             }
             Debug.Log($"Loaded animation: {animData.frameCount} frames at {animData.fps} fps");
         }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"Failed to load animation: {e.Message}");
-        }
+        catch (Exception e) { Debug.LogError($"Failed to load animation: {e.Message}"); }
     }
 
     void ApplyFrame()
     {
         if (animData == null) return;
 
-        float frameFloat = currentTime * animData.fps;
-        int frame = Mathf.FloorToInt(frameFloat);
+        int frame = Mathf.FloorToInt(currentTime * animData.fps);
         frame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
         
         Vector3 currentAnimTranslation = animData.translations[frame];
         Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
+        
+        // *** MODIFIED ***: Create a rotation based on the live Y rotation value.
+        Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
+        
+        // *** MODIFIED ***: Rotate the animation's displacement vector by the character's rotation.
+        // This ensures "forward" in the animation data aligns with the character's new "forward".
+        Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
 
+        // The final start position is the initial scene position plus the tuned offset.
         Vector3 finalStartPosition = modelBaseInitialPosition + currentAdditionalOffset;
 
-        float newX = finalStartPosition.x + animationDisplacement.x;
-        float newY = currentAnimTranslation.y;
-        float newZ = finalStartPosition.z + animationDisplacement.z;
-
-        transform.localPosition = new Vector3(newX, newY, newZ);
+        // Apply the rotated displacement to the starting position.
+        Vector3 newPosition = finalStartPosition + rotatedDisplacement;
+        transform.localPosition = newPosition;
 
         for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
         {
@@ -175,7 +178,7 @@ public class SMPLAnimationPlayer : MonoBehaviour
                 {
                     bones[boneIndex].Rotate(-90, 0, 0, Space.Self);
                 }
-                bones[boneIndex].localRotation = bones[boneIndex].localRotation * animData.poses[frame, jointIndex];
+                bones[boneIndex].localRotation *= animData.poses[frame, jointIndex];
             }
         }
     }

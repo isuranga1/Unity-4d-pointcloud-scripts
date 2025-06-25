@@ -42,9 +42,13 @@ public class BatchProcessor : MonoBehaviour
 
     private List<string> animationFiles = new List<string>();
     private Dictionary<string, Vector3> tunedOffsets = new Dictionary<string, Vector3>();
+    // *** NEW ***: Dictionary to store tuned Y-axis rotations.
+    private Dictionary<string, float> tunedRotations = new Dictionary<string, float>();
     private Dictionary<string, bool> includedAnimations = new Dictionary<string, bool>();
     private int currentAnimationIndex = -1;
     private Vector2 liveOffset; // Use Vector2 for UI (x, z)
+    // *** NEW ***: Variable to hold the live rotation value from the UI.
+    private float liveRotationY;
     private bool isDirty = false;
 
     void Start()
@@ -84,15 +88,17 @@ public class BatchProcessor : MonoBehaviour
             {
                 string jsonText = File.ReadAllText(configPath);
                 var json = JSON.Parse(jsonText);
-                foreach (KeyValuePair<string, JSONNode> animOffset in json)
+                foreach (KeyValuePair<string, JSONNode> animConfig in json)
                 {
-                    tunedOffsets[animOffset.Key] = new Vector3(animOffset.Value["x"], 0, animOffset.Value["z"]);
+                    // *** MODIFIED ***: Load position and rotation offsets.
+                    tunedOffsets[animConfig.Key] = new Vector3(animConfig.Value["x"], 0, animConfig.Value["z"]);
+                    tunedRotations[animConfig.Key] = animConfig.Value["y_rotation"];
                 }
                 Debug.Log($"Successfully loaded {tunedOffsets.Count} initial offsets from {initialOffsetsConfigName}.");
             }
             catch (Exception e) { Debug.LogError($"Error parsing {initialOffsetsConfigName}: {e.Message}"); }
         }
-        else { Debug.LogWarning($"Initial offsets file not found at {configPath}. All animations will start with a (0,0) offset."); }
+        else { Debug.LogWarning($"Initial offsets file not found at {configPath}. All animations will start with a (0,0,0) offset/rotation."); }
     }
 
     private void PopulateAnimationList()
@@ -117,9 +123,14 @@ public class BatchProcessor : MonoBehaviour
         currentAnimationIndex = Mathf.Clamp(index, 0, animationFiles.Count - 1);
         string filePath = animationFiles[currentAnimationIndex];
         string animFileName = Path.GetFileNameWithoutExtension(filePath);
+        
+        // *** MODIFIED ***: Load both position and rotation for the current animation.
         Vector3 offsetToLoad = tunedOffsets.ContainsKey(animFileName) ? tunedOffsets[animFileName] : Vector3.zero;
+        float rotationToLoad = tunedRotations.ContainsKey(animFileName) ? tunedRotations[animFileName] : 0f;
+        
         liveOffset = new Vector2(offsetToLoad.x, offsetToLoad.z);
-        smplPlayer.LoadAndPlayAnimation(filePath, offsetToLoad);
+        liveRotationY = rotationToLoad;
+        smplPlayer.LoadAndPlayAnimation(filePath, offsetToLoad, rotationToLoad);
         isDirty = false;
     }
 
@@ -131,10 +142,12 @@ public class BatchProcessor : MonoBehaviour
         string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
         Directory.CreateDirectory(outputDirectory);
         JSONNode rootNode = new JSONObject();
-        JSONObject offsetNode = new JSONObject { ["x"] = liveOffset.x, ["z"] = liveOffset.y };
+        
+        // *** MODIFIED ***: Save position and rotation into the JSON object.
+        JSONObject offsetNode = new JSONObject { ["x"] = liveOffset.x, ["z"] = liveOffset.y, ["y_rotation"] = liveRotationY };
         rootNode[animFileName] = offsetNode;
         File.WriteAllText(savePath, rootNode.ToString(4));
-        Debug.Log($"Saved offset for '{animFileName}' to: {savePath}");
+        Debug.Log($"Saved offset and rotation for '{animFileName}' to: {savePath}");
         isDirty = false;
     }
 
@@ -142,7 +155,8 @@ public class BatchProcessor : MonoBehaviour
     {
         if (currentState != EditorState.Tuning || animationFiles.Count == 0) return;
 
-        GUI.Box(new Rect(10, 10, 300, 250), "Animation Tuner & Batcher");
+        // *** MODIFIED ***: Increased UI box height.
+        GUI.Box(new Rect(10, 10, 300, 280), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
         
         bool isIncluded = includedAnimations[animFileName];
@@ -154,25 +168,32 @@ public class BatchProcessor : MonoBehaviour
         GUI.Label(new Rect(20, 100, 40, 20), $"Z: {liveOffset.y:F2}");
         liveOffset.y = GUI.HorizontalSlider(new Rect(70, 105, 230, 20), liveOffset.y, -10f, 10f);
 
+        // *** NEW ***: Added UI slider for Y-axis rotation.
+        GUI.Label(new Rect(20, 130, 80, 20), $"Rot Y: {liveRotationY:F1}");
+        liveRotationY = GUI.HorizontalSlider(new Rect(90, 135, 210, 20), liveRotationY, -180f, 180f);
+
         if (GUI.changed)
         {
             Vector3 newOffset = new Vector3(liveOffset.x, 0, liveOffset.y);
             tunedOffsets[animFileName] = newOffset;
+            tunedRotations[animFileName] = liveRotationY; // Store live rotation change
+            
             smplPlayer.UpdateLiveOffset(newOffset);
+            smplPlayer.UpdateLiveRotation(liveRotationY); // Update player in real-time
             isDirty = true;
         }
 
-        if (GUI.Button(new Rect(20, 135, 80, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
-        if (GUI.Button(new Rect(110, 135, 80, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
+        if (GUI.Button(new Rect(20, 165, 80, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
+        if (GUI.Button(new Rect(110, 165, 80, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
         GUI.color = isDirty ? Color.green : Color.white;
-        if (GUI.Button(new Rect(200, 135, 100, 20), "Save Offset")) SaveCurrentOffset();
+        if (GUI.Button(new Rect(200, 165, 100, 20), "Save All")) SaveCurrentOffset();
         GUI.color = Color.white;
         
         int includedCount = includedAnimations.Values.Count(b => b);
-        GUI.Label(new Rect(20, 165, 280, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
+        GUI.Label(new Rect(20, 195, 280, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
 
         GUI.backgroundColor = new Color(0.8f, 1f, 0.8f);
-        if (GUI.Button(new Rect(20, 195, 280, 40), $"Start Batch Process ({includedCount} items)"))
+        if (GUI.Button(new Rect(20, 225, 280, 40), $"Start Batch Process ({includedCount} items)"))
         {
             currentState = EditorState.BatchProcessing;
             StartCoroutine(RunAutomatedBatch());
@@ -205,6 +226,7 @@ public class BatchProcessor : MonoBehaviour
             Debug.Log($"--- Starting batch recording for: {animFileName} ---");
             
             Vector3 finalOffset = Vector3.zero;
+            float finalRotation = 0f;
             string description = "No description found.";
             string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
             
@@ -223,22 +245,25 @@ public class BatchProcessor : MonoBehaviour
                     {
                         finalOffset.x = offsetJson[animFileName]["x"];
                         finalOffset.z = offsetJson[animFileName]["z"];
-                        Debug.Log($"Loaded tuned offset for '{animFileName}': X={finalOffset.x}, Z={finalOffset.z}");
+                        finalRotation = offsetJson[animFileName]["y_rotation"];
+                        Debug.Log($"Loaded tuned offset for '{animFileName}': X={finalOffset.x}, Z={finalOffset.z}, RotY={finalRotation}");
                     }
                 }
-                else { Debug.LogWarning($"No tuned offset file found for '{animFileName}'. Using default (0,0) offset."); }
+                else { Debug.LogWarning($"No tuned offset file found for '{animFileName}'. Using default offset/rotation."); }
             }
             catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
             
             JSONObject animSummaryReport = new JSONObject();
             animSummaryReport["animationName"] = animFileName;
             animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["z"] = finalOffset.z };
+            animSummaryReport["tunedRotationY"] = finalRotation;
             processedAnimationsReport.Add(animSummaryReport);
 
             JSONObject individualReport = new JSONObject();
             individualReport["animationName"] = animFileName;
             individualReport["description"] = description;
             individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["z"] = finalOffset.z };
+            individualReport["tunedRotationY"] = finalRotation;
 
             string samplerSubfolderPath = Path.Combine(environmentFolderName, animFileName, sceneFolderName);
             string finalOutputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, samplerSubfolderPath);
@@ -246,7 +271,7 @@ public class BatchProcessor : MonoBehaviour
 
             string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
             sceneRecorder.BeginRecording(videoFilePath);
-            smplPlayer.LoadAndPlayAnimation(filePath, finalOffset);
+            smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
             
             yield return null;
 
@@ -331,39 +356,18 @@ public class BatchProcessor : MonoBehaviour
             report["cameraSettings"] = cameraSettings;
         }
 
-        // *** MODIFIED ***: Use a more robust method for finding scene objects.
 #if UNITY_EDITOR
         JSONArray sceneObjects = new JSONArray();
-        // Use a HashSet to ensure we only report each root object once.
         HashSet<GameObject> reportedRoots = new HashSet<GameObject>();
 
         foreach (GameObject go in FindObjectsOfType<GameObject>())
         {
-            // Find the absolute root of the current GameObject's hierarchy.
             Transform root = go.transform.root;
-
-            // If we have already processed this root, skip to the next object.
-            if (reportedRoots.Contains(root.gameObject))
-            {
-                continue;
-            }
-            
-            // Add the root to our set so we don't process it or its children again.
+            if (reportedRoots.Contains(root.gameObject)) continue;
             reportedRoots.Add(root.gameObject);
-
-            // Exclude the player model's hierarchy, as it's reported separately.
-            if (root == smplPlayer.transform.root)
-            {
-                continue;
-            }
-
-            // Exclude non-visible objects (like empty folders or managers) by checking for a renderer.
-            if (root.GetComponentInChildren<Renderer>() == null)
-            {
-                continue;
-            }
+            if (root == smplPlayer.transform.root) continue;
+            if (root.GetComponentInChildren<Renderer>() == null) continue;
             
-            // This is a valid, visible, non-player scene object. Add it to the report.
             JSONObject objectInfo = new JSONObject();
             objectInfo["instanceName"] = root.name;
             
