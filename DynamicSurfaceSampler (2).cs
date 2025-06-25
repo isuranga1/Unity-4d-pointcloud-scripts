@@ -14,33 +14,30 @@ public class DynamicSurfaceSampler : MonoBehaviour
     [System.Serializable]
     public struct ObjectDensityOverride
     {
-        [Tooltip("Object name keyword to match (case insensitive)")]
         public string objectKeyword;
-        [Tooltip("Points per unit area for this object type")]
         public float pointsPerUnitArea;
-        [Tooltip("Use exact name match instead of keyword search")]
         public bool exactMatch;
     }
 
     [Header("Capture Settings")]
     public float captureDuration = 5f;
     public float captureFPS = 10f;
-    public string outputDirectory = "Scans";
+    public string baseOutputDirectory = "Scans";
 
     [Header("Randomization")]
     public int fixedRandomSeed = 1337;
-
-
-
+    
     void Start()
     {
-        StartCoroutine(DynamicSamplingCoroutine());
+        // The BatchProcessor now controls when sampling starts.
     }
 
-    IEnumerator DynamicSamplingCoroutine()
+    public IEnumerator StartSampling(string outputSubFolder)
     {
         float interval = 1f / captureFPS;
         int totalFrames = Mathf.CeilToInt(captureDuration * captureFPS);
+
+        Debug.Log($"Starting sampling for {captureDuration}s at {captureFPS} FPS. Saving to '{outputSubFolder}'.");
 
         for (int frame = 0; frame < totalFrames; frame++)
         {
@@ -48,36 +45,29 @@ public class DynamicSurfaceSampler : MonoBehaviour
             List<string> labels = new List<string>();
 
             SampleScenePoints(sampledPoints, labels);
-            SaveFrameToPCD(sampledPoints, labels, frame);
+            SaveFrameToPCD(sampledPoints, labels, frame, outputSubFolder);
 
             yield return new WaitForSeconds(interval);
         }
-    }
 
+        Debug.Log("Sampling for current animation finished.");
+    }
+    
     void SampleScenePoints(List<Vector3> sampledPoints, List<string> labels)
     {
         Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
 
-        // Sample from MeshFilter objects (static meshes)
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
         {
-            if (!mf.gameObject.activeInHierarchy) continue;
-            
-            Mesh mesh = mf.sharedMesh;
-            if (mesh == null) continue;
-
-            SampleMeshPointsUniform(mesh, mf.transform, mf.gameObject.name, roomBounds, sampledPoints, labels);
+            if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
+            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, sampledPoints, labels);
         }
 
-        // Sample from SkinnedMeshRenderer objects (animated characters)
         foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
             if (!smr.gameObject.activeInHierarchy) continue;
-            
-            // Use current animated pose - requires Read/Write enabled on mesh
             Mesh bakedMesh = new Mesh();
             smr.BakeMesh(bakedMesh);
-            
             SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, sampledPoints, labels);
         }
     }
@@ -87,11 +77,8 @@ public class DynamicSurfaceSampler : MonoBehaviour
         Vector3[] vertices = mesh.vertices;
         int[] triangles = mesh.triangles;
         int objectID = objectName.GetHashCode();
-
-        // Get density for this specific object
         float objectDensity = GetDensityForObject(objectName);
 
-        // Step 1: Calculate total surface area and triangle areas
         List<float> triangleAreas = new List<float>();
         float totalSurfaceArea = 0f;
 
@@ -105,12 +92,9 @@ public class DynamicSurfaceSampler : MonoBehaviour
             totalSurfaceArea += area;
         }
 
-        // Step 2: Calculate total points needed for this object based on surface area and object-specific density
         int totalPointsNeeded = Mathf.CeilToInt(totalSurfaceArea * objectDensity);
-        
         if (totalPointsNeeded == 0) return;
 
-        // Step 3: Create cumulative area array for weighted sampling
         List<float> cumulativeAreas = new List<float>();
         float runningSum = 0f;
         foreach (float area in triangleAreas)
@@ -119,15 +103,12 @@ public class DynamicSurfaceSampler : MonoBehaviour
             cumulativeAreas.Add(runningSum);
         }
 
-        // Step 4: Sample points using weighted triangle selection
         Random.InitState(fixedRandomSeed + objectID);
 
         for (int pointIndex = 0; pointIndex < totalPointsNeeded; pointIndex++)
         {
-            // Select triangle based on area weighting
             float randomValue = Random.value * totalSurfaceArea;
             int selectedTriangle = 0;
-            
             for (int i = 0; i < cumulativeAreas.Count; i++)
             {
                 if (randomValue <= cumulativeAreas[i])
@@ -137,15 +118,12 @@ public class DynamicSurfaceSampler : MonoBehaviour
                 }
             }
 
-            // Sample point on selected triangle
             int triIndex = selectedTriangle * 3;
             Vector3 v0 = transform.TransformPoint(vertices[triangles[triIndex]]);
             Vector3 v1 = transform.TransformPoint(vertices[triangles[triIndex + 1]]);
             Vector3 v2 = transform.TransformPoint(vertices[triangles[triIndex + 2]]);
-
             Vector3 sample = SamplePointOnTriangle(v0, v1, v2);
-            
-            // Only add if within room bounds
+
             if (roomBounds.Contains(sample))
             {
                 sampledPoints.Add(sample);
@@ -156,36 +134,17 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
     float GetDensityForObject(string objectName)
     {
-        // Debug: Print object name to console
-        Debug.Log($"Checking density for object: '{objectName}'");
-        
-        // Check density overrides
         foreach (ObjectDensityOverride densityOverride in densityOverrides)
         {
-            bool isMatch = false;
-            
-            if (densityOverride.exactMatch)
-            {
-                // Exact name match (case insensitive)
-                isMatch = string.Equals(objectName, densityOverride.objectKeyword, System.StringComparison.OrdinalIgnoreCase);
-                Debug.Log($"Exact match check: '{objectName}' vs '{densityOverride.objectKeyword}' = {isMatch}");
-            }
-            else
-            {
-                // Keyword search (case insensitive)
-                isMatch = objectName.ToLower().Contains(densityOverride.objectKeyword.ToLower());
-                Debug.Log($"Keyword match check: '{objectName}' contains '{densityOverride.objectKeyword}' = {isMatch}");
-            }
-            
+            bool isMatch = densityOverride.exactMatch
+                ? string.Equals(objectName, densityOverride.objectKeyword, System.StringComparison.OrdinalIgnoreCase)
+                : objectName.ToLower().Contains(densityOverride.objectKeyword.ToLower());
+
             if (isMatch)
             {
-                Debug.Log($"Using override density: {densityOverride.pointsPerUnitArea} for '{objectName}'");
                 return densityOverride.pointsPerUnitArea;
             }
         }
-        
-        // Return default density if no override found
-        Debug.Log($"Using default density: {defaultPointsPerUnitArea} for '{objectName}'");
         return defaultPointsPerUnitArea;
     }
 
@@ -197,77 +156,81 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return v0 + u * (v1 - v0) + v * (v2 - v0);
     }
 
+    // *** MODIFIED METHOD ***
     Bounds CalculateRoomBounds(string keyword)
     {
         Bounds bounds = new Bounds();
         bool initialized = false;
 
-        // Check both MeshFilter and SkinnedMeshRenderer for room bounds
-        foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
+        System.Action<Vector3> encapsulate = (worldPoint) =>
         {
-            if (!mf.name.ToLower().Contains(keyword.ToLower()))
-                continue;
-
-            Mesh mesh = mf.sharedMesh;
-            if (mesh == null) continue;
-
-            foreach (Vector3 v in mesh.vertices)
+            if (!initialized)
             {
-                Vector3 worldPoint = mf.transform.TransformPoint(v);
-                if (!initialized)
-                {
-                    bounds = new Bounds(worldPoint, Vector3.zero);
-                    initialized = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(worldPoint);
-                }
+                bounds = new Bounds(worldPoint, Vector3.zero);
+                initialized = true;
+            }
+            else
+            {
+                bounds.Encapsulate(worldPoint);
+            }
+        };
+        
+        Debug.Log($"--- Checking for room bounds using keyword: '{keyword}' ---");
+
+        // *** Loop through MeshFilters with a null check
+        foreach (var mf in FindObjectsOfType<MeshFilter>())
+        {
+            bool hasMesh = mf.sharedMesh != null;
+            bool nameMatches = mf.name.ToLower().Contains(keyword.ToLower());
+            // *** NEW: Added a detailed log to help diagnose the issue.
+            // Debug.Log($"Checking MeshFilter on '{mf.name}': Name matches = {nameMatches}, Has mesh = {hasMesh}");
+
+            if (nameMatches && hasMesh)
+            {
+                foreach (var v in mf.sharedMesh.vertices) encapsulate(mf.transform.TransformPoint(v));
             }
         }
-
-        foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
+        
+        // *** Loop through SkinnedMeshRenderers with a null check
+        foreach (var smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
-            if (!smr.name.ToLower().Contains(keyword.ToLower()))
-                continue;
+            bool hasMesh = smr.sharedMesh != null;
+            bool nameMatches = smr.name.ToLower().Contains(keyword.ToLower());
+            // *** NEW: Added a detailed log to help diagnose the issue.
+            // Debug.Log($"Checking SkinnedMeshRenderer on '{smr.name}': Name matches = {nameMatches}, Has mesh = {hasMesh}");
 
-            Mesh mesh = smr.sharedMesh;
-            if (mesh == null) continue;
-
-            foreach (Vector3 v in mesh.vertices)
+            if (nameMatches && hasMesh)
             {
-                Vector3 worldPoint = smr.transform.TransformPoint(v);
-                if (!initialized)
-                {
-                    bounds = new Bounds(worldPoint, Vector3.zero);
-                    initialized = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(worldPoint);
-                }
+                foreach (var v in smr.sharedMesh.vertices) encapsulate(smr.transform.TransformPoint(v));
             }
         }
 
         if (!initialized)
         {
+            // Fallback if no room object is found at all
+            Debug.LogWarning($"Could not find any 'room' objects with meshes to calculate bounds. Using a large default bound.");
             bounds = new Bounds(Vector3.zero, new Vector3(1000, 1000, 1000));
+        }
+        else
+        {
+            Debug.Log("Successfully calculated room bounds.");
         }
 
         return bounds;
     }
-
-    void SaveFrameToPCD(List<Vector3> points, List<string> labels, int frameIndex)
+    
+    void SaveFrameToPCD(List<Vector3> points, List<string> labels, int frameIndex, string outputSubFolder)
     {
-        if (!Directory.Exists(outputDirectory))
-            Directory.CreateDirectory(outputDirectory);
+        string finalDirectory = Path.Combine(baseOutputDirectory, outputSubFolder);
+
+        if (!Directory.Exists(finalDirectory))
+            Directory.CreateDirectory(finalDirectory);
 
         string filename = $"frame_{frameIndex:D3}.pcd";
-        string path = Path.Combine(outputDirectory, filename);
+        string path = Path.Combine(finalDirectory, filename);
 
         using (StreamWriter writer = new StreamWriter(path, false, Encoding.ASCII))
         {
-            // PCD Header
             writer.WriteLine("# .PCD v0.7 - Point Cloud Data file format");
             writer.WriteLine("VERSION 0.7");
             writer.WriteLine("FIELDS x y z label");
@@ -280,7 +243,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
             writer.WriteLine($"POINTS {points.Count}");
             writer.WriteLine("DATA ascii");
 
-            // Point data
             for (int i = 0; i < points.Count; i++)
             {
                 Vector3 p = points[i];
