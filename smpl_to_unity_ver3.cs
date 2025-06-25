@@ -24,10 +24,10 @@ public class SMPLAnimationPlayer : MonoBehaviour
     private bool isPlaying = false;
     private Transform[] bones;
     
-    // Variables to handle position and rotation offsets.
+    // *** MODIFIED ***: Renamed variables for clarity to indicate they handle full 3D position and rotation.
     private Vector3 modelBaseInitialPosition;
     private Vector3 modelBaseInitialRotation;
-    private Vector3 currentAdditionalOffset;
+    private Vector3 currentPositionalOffset; // This now clearly includes X, Y, and Z offsets.
     private float currentAdditionalRotationY;
     private Vector3 animationStartOffset;
 
@@ -81,18 +81,20 @@ public class SMPLAnimationPlayer : MonoBehaviour
         }
     }
 
-    public void LoadAndPlayAnimation(string jsonFilePath, Vector3 additionalOffset, float additionalRotationY)
+    // *** MODIFIED ***: Renamed parameter for clarity.
+    public void LoadAndPlayAnimation(string jsonFilePath, Vector3 positionalOffset, float additionalRotationY)
     {
-        this.currentAdditionalOffset = additionalOffset;
+        this.currentPositionalOffset = positionalOffset;
         UpdateLiveRotation(additionalRotationY);
         string jsonText = File.ReadAllText(jsonFilePath);
         LoadAnimation(jsonText);
         Play();
     }
 
-    public void UpdateLiveOffset(Vector3 newOffset)
+    // *** MODIFIED ***: Renamed parameter for clarity.
+    public void UpdateLiveOffset(Vector3 newPositionalOffset)
     {
-        this.currentAdditionalOffset = newOffset;
+        this.currentPositionalOffset = newPositionalOffset;
     }
     
     public void UpdateLiveRotation(float newRotationY)
@@ -154,17 +156,12 @@ public class SMPLAnimationPlayer : MonoBehaviour
         Vector3 currentAnimTranslation = animData.translations[frame];
         Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
         
-        // *** MODIFIED ***: Create a rotation based on the live Y rotation value.
         Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
-        
-        // *** MODIFIED ***: Rotate the animation's displacement vector by the character's rotation.
-        // This ensures "forward" in the animation data aligns with the character's new "forward".
         Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
 
-        // The final start position is the initial scene position plus the tuned offset.
-        Vector3 finalStartPosition = modelBaseInitialPosition + currentAdditionalOffset;
+        // *** MODIFIED ***: The final start position now correctly includes the X, Y, and Z offsets from the controller.
+        Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
 
-        // Apply the rotated displacement to the starting position.
         Vector3 newPosition = finalStartPosition + rotatedDisplacement;
         transform.localPosition = newPosition;
 
