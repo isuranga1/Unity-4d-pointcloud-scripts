@@ -6,6 +6,10 @@ using System.Linq;
 using System.Collections.Generic;
 using SimpleJSON;
 
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
 /// <summary>
 /// A unified, two-stage tool for animation processing.
 /// Stage 1: An interactive UI for tuning and saving animation offsets.
@@ -16,7 +20,9 @@ public class BatchProcessor : MonoBehaviour
     [Header("Component References")]
     public SMPLAnimationPlayer smplPlayer;
     public DynamicSurfaceSampler surfaceSampler;
-    public SceneRecorder sceneRecorder; // Needed for the batch process part
+    public SceneRecorder sceneRecorder;
+    [Tooltip("The main camera of the scene. If not assigned, it will try to find Camera.main.")]
+    public Camera mainCamera;
 
     [Header("Batch Settings")]
     [Tooltip("Path to the folder of JSON animations, relative to the StreamingAssets folder.")]
@@ -36,6 +42,7 @@ public class BatchProcessor : MonoBehaviour
 
     private List<string> animationFiles = new List<string>();
     private Dictionary<string, Vector3> tunedOffsets = new Dictionary<string, Vector3>();
+    private Dictionary<string, bool> includedAnimations = new Dictionary<string, bool>();
     private int currentAnimationIndex = -1;
     private Vector2 liveOffset; // Use Vector2 for UI (x, z)
     private bool isDirty = false;
@@ -47,6 +54,15 @@ public class BatchProcessor : MonoBehaviour
         {
             Debug.LogError("BatchProcessor Error: SMPLPlayer, SurfaceSampler, or SceneRecorder is not assigned!");
             return;
+        }
+
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main;
+            if (mainCamera == null)
+            {
+                Debug.LogError("Main Camera is not assigned and could not be found with Camera.main tag!");
+            }
         }
 
         // Setup for the tuning stage
@@ -86,6 +102,13 @@ public class BatchProcessor : MonoBehaviour
         animationFiles = Directory.GetFiles(fullPath)
             .Where(file => file.EndsWith(".json") || file.EndsWith(".txt"))
             .ToList();
+
+        includedAnimations.Clear();
+        foreach(string filePath in animationFiles)
+        {
+            string animFileName = Path.GetFileNameWithoutExtension(filePath);
+            includedAnimations[animFileName] = true;
+        }
     }
 
     private void LoadAnimationForTuning(int index)
@@ -104,7 +127,6 @@ public class BatchProcessor : MonoBehaviour
     {
         if (currentAnimationIndex < 0) return;
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
-        // *** MODIFIED ***: Include the new environment folder name in the path.
         string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName);
         string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
         Directory.CreateDirectory(outputDirectory);
@@ -120,9 +142,12 @@ public class BatchProcessor : MonoBehaviour
     {
         if (currentState != EditorState.Tuning || animationFiles.Count == 0) return;
 
-        GUI.Box(new Rect(10, 10, 300, 220), "Animation Tuner & Batcher");
+        GUI.Box(new Rect(10, 10, 300, 250), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
-        GUI.Label(new Rect(20, 40, 280, 20), $"Animation: {animFileName}");
+        
+        bool isIncluded = includedAnimations[animFileName];
+        isIncluded = GUI.Toggle(new Rect(20, 40, 280, 20), isIncluded, $" Process Animation: {animFileName}");
+        includedAnimations[animFileName] = isIncluded;
 
         GUI.Label(new Rect(20, 70, 40, 20), $"X: {liveOffset.x:F2}");
         liveOffset.x = GUI.HorizontalSlider(new Rect(70, 75, 230, 20), liveOffset.x, -10f, 10f);
@@ -142,9 +167,12 @@ public class BatchProcessor : MonoBehaviour
         GUI.color = isDirty ? Color.green : Color.white;
         if (GUI.Button(new Rect(200, 135, 100, 20), "Save Offset")) SaveCurrentOffset();
         GUI.color = Color.white;
+        
+        int includedCount = includedAnimations.Values.Count(b => b);
+        GUI.Label(new Rect(20, 165, 280, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
 
         GUI.backgroundColor = new Color(0.8f, 1f, 0.8f);
-        if (GUI.Button(new Rect(20, 170, 280, 40), "Start Automated Batch Process"))
+        if (GUI.Button(new Rect(20, 195, 280, 40), $"Start Batch Process ({includedCount} items)"))
         {
             currentState = EditorState.BatchProcessing;
             StartCoroutine(RunAutomatedBatch());
@@ -167,24 +195,27 @@ public class BatchProcessor : MonoBehaviour
         foreach (string filePath in animationFiles)
         {
             string animFileName = Path.GetFileNameWithoutExtension(filePath);
+            
+            if (!includedAnimations.ContainsKey(animFileName) || !includedAnimations[animFileName])
+            {
+                Debug.Log($"--- Skipping '{animFileName}' as it is excluded from the batch process. ---");
+                continue; 
+            }
+            
             Debug.Log($"--- Starting batch recording for: {animFileName} ---");
             
-            // --- Load Offset and Text Prompt ---
             Vector3 finalOffset = Vector3.zero;
             string description = "No description found.";
-            // *** MODIFIED ***: Include the new environment folder name in the path.
             string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
             
             try
             {
-                // Load the text prompt from the main animation file
                 var animJson = JSON.Parse(File.ReadAllText(filePath));
                 if (animJson["description"] != null)
                 {
                     description = animJson["description"];
                 }
 
-                // Load the tuned offset if it exists
                 if (File.Exists(offsetFilePath))
                 {
                     var offsetJson = JSON.Parse(File.ReadAllText(offsetFilePath));
@@ -199,24 +230,20 @@ public class BatchProcessor : MonoBehaviour
             }
             catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
             
-            // --- Add data to summary report ---
             JSONObject animSummaryReport = new JSONObject();
             animSummaryReport["animationName"] = animFileName;
             animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["z"] = finalOffset.z };
             processedAnimationsReport.Add(animSummaryReport);
 
-            // --- Create and Save Individual Report ---
             JSONObject individualReport = new JSONObject();
             individualReport["animationName"] = animFileName;
             individualReport["description"] = description;
             individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["z"] = finalOffset.z };
 
-            // *** MODIFIED ***: Include the new environment folder name in the path passed to the sampler.
             string samplerSubfolderPath = Path.Combine(environmentFolderName, animFileName, sceneFolderName);
             string finalOutputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, samplerSubfolderPath);
             SaveIndividualReport(individualReport, finalOutputDirectory);
 
-            // --- Run Recorders ---
             string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
             sceneRecorder.BeginRecording(videoFilePath);
             smplPlayer.LoadAndPlayAnimation(filePath, finalOffset);
@@ -229,13 +256,22 @@ public class BatchProcessor : MonoBehaviour
             Debug.Log($"--- Finished batch recording for: {animFileName} ---");
         }
         
+        JSONArray excludedAnimationsReport = new JSONArray();
+        foreach (string animFileName in includedAnimations.Keys)
+        {
+            if (!includedAnimations[animFileName])
+            {
+                excludedAnimationsReport.Add(animFileName);
+            }
+        }
+        summaryReport["excludedAnimations"] = excludedAnimationsReport;
+
         SaveSummaryReport(summaryReport);
 
         Debug.Log("====== AUTOMATED BATCH PROCESS COMPLETE! ======");
         if (quitOnFinish)
         {
             Debug.Log("Quitting application.");
-            Application.Quit();
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.isPlaying = false;
 #endif
@@ -250,7 +286,6 @@ public class BatchProcessor : MonoBehaviour
     {
         JSONObject report = new JSONObject();
         report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        // *** MODIFIED ***: Include the new environment folder name in the report.
         report["environmentName"] = environmentFolderName;
         report["sceneName"] = sceneFolderName;
         
@@ -282,6 +317,73 @@ public class BatchProcessor : MonoBehaviour
         JSONObject recorderSettings = new JSONObject();
         report["sceneRecorderSettings"] = recorderSettings;
 
+        if (mainCamera != null)
+        {
+            JSONObject cameraSettings = new JSONObject();
+            Transform camTransform = mainCamera.transform;
+            cameraSettings["name"] = mainCamera.name;
+            cameraSettings["position"] = new JSONObject { ["x"] = camTransform.position.x, ["y"] = camTransform.position.y, ["z"] = camTransform.position.z };
+            cameraSettings["rotation"] = new JSONObject { ["x"] = camTransform.eulerAngles.x, ["y"] = camTransform.eulerAngles.y, ["z"] = camTransform.eulerAngles.z };
+            cameraSettings["fieldOfView"] = mainCamera.fieldOfView;
+            cameraSettings["nearClipPlane"] = mainCamera.nearClipPlane;
+            cameraSettings["farClipPlane"] = mainCamera.farClipPlane;
+            cameraSettings["projectionType"] = mainCamera.orthographic ? "Orthographic" : "Perspective";
+            report["cameraSettings"] = cameraSettings;
+        }
+
+        // *** MODIFIED ***: Use a more robust method for finding scene objects.
+#if UNITY_EDITOR
+        JSONArray sceneObjects = new JSONArray();
+        // Use a HashSet to ensure we only report each root object once.
+        HashSet<GameObject> reportedRoots = new HashSet<GameObject>();
+
+        foreach (GameObject go in FindObjectsOfType<GameObject>())
+        {
+            // Find the absolute root of the current GameObject's hierarchy.
+            Transform root = go.transform.root;
+
+            // If we have already processed this root, skip to the next object.
+            if (reportedRoots.Contains(root.gameObject))
+            {
+                continue;
+            }
+            
+            // Add the root to our set so we don't process it or its children again.
+            reportedRoots.Add(root.gameObject);
+
+            // Exclude the player model's hierarchy, as it's reported separately.
+            if (root == smplPlayer.transform.root)
+            {
+                continue;
+            }
+
+            // Exclude non-visible objects (like empty folders or managers) by checking for a renderer.
+            if (root.GetComponentInChildren<Renderer>() == null)
+            {
+                continue;
+            }
+            
+            // This is a valid, visible, non-player scene object. Add it to the report.
+            JSONObject objectInfo = new JSONObject();
+            objectInfo["instanceName"] = root.name;
+            
+            string prefabPath = "Not a prefab";
+            if (PrefabUtility.IsPartOfAnyPrefab(root.gameObject))
+            {
+                prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(root.gameObject);
+            }
+            objectInfo["assetPath"] = string.IsNullOrEmpty(prefabPath) ? "Not Found" : prefabPath;
+            
+            Transform t = root.transform;
+            objectInfo["position"] = new JSONObject { ["x"] = t.position.x, ["y"] = t.position.y, ["z"] = t.position.z };
+            objectInfo["rotation"] = new JSONObject { ["x"] = t.eulerAngles.x, ["y"] = t.eulerAngles.y, ["z"] = t.eulerAngles.z };
+            objectInfo["scale"] = new JSONObject { ["x"] = t.localScale.x, ["y"] = t.localScale.y, ["z"] = t.localScale.z };
+
+            sceneObjects.Add(objectInfo);
+        }
+        report["sceneObjects"] = sceneObjects;
+#endif
+
         return report;
     }
 
@@ -289,7 +391,6 @@ public class BatchProcessor : MonoBehaviour
     {
         try
         {
-            // *** MODIFIED ***: Include the new environment folder name in the path.
             string reportDirectory = Path.Combine("reports", environmentFolderName, sceneFolderName);
             Directory.CreateDirectory(reportDirectory);
             string reportPath = Path.Combine(reportDirectory, "scene_summary_report.json");
@@ -299,7 +400,6 @@ public class BatchProcessor : MonoBehaviour
         catch (Exception e) { Debug.LogError($"Failed to save summary report: {e.Message}"); }
     }
 
-    // *** NEW ***: Saves the individual report inside the specific animation's folder.
     private void SaveIndividualReport(JSONNode report, string outputDirectory)
     {
         try
