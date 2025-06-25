@@ -96,6 +96,20 @@
             pointer-events: none;
             z-index: 1000;
         }
+        
+        /* NEW: Hint for camera focus control */
+        #focus-hint {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: rgba(255,255,255,0.7);
+            pointer-events: auto;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
 
         .ui-panel {
             pointer-events: auto;
@@ -516,6 +530,11 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- NEW: Hint for focus control -->
+                    <div id="focus-hint">
+                        <b>C</b> + Click to set focus point
+                    </div>
                 </div>
             </div>
             
@@ -540,6 +559,7 @@
                 this.scene = new THREE.Scene();
                 this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
                 this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                this.raycaster = new THREE.Raycaster();
                 
                 this.points = null;
                 this.frames = [];
@@ -559,6 +579,14 @@
                 this.datasetStructure = {};
                 this.currentPath = [];
                 this.currentScene = null;
+
+                this.wireframeGroup = new THREE.Group();
+                this.showWireframe = false;
+                
+                // NEW: Camera target properties
+                this.cameraTarget = new THREE.Vector3(0, 0, 0);
+                this.targetIndicator = null;
+                this.isCKeyDown = false;
                 
                 this.init();
                 this.setupControls();
@@ -573,8 +601,7 @@
                 viewerContainer.appendChild(this.renderer.domElement);
 
                 this.camera.position.set(5, 5, 5);
-                this.camera.lookAt(0, 0, 0);
-                this.updateCameraAspect();
+                this.camera.lookAt(this.cameraTarget);
 
                 this.scene.background = new THREE.Color(0x0a0a0a);
                 
@@ -587,6 +614,16 @@
 
                 const axesHelper = new THREE.AxesHelper(2);
                 this.scene.add(axesHelper);
+
+                // NEW: Initialize and add target indicator
+                const indicatorGeom = new THREE.SphereGeometry(0.05, 16, 16);
+                const indicatorMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
+                this.targetIndicator = new THREE.Mesh(indicatorGeom, indicatorMat);
+                this.targetIndicator.position.copy(this.cameraTarget);
+                this.scene.add(this.targetIndicator);
+
+                this.scene.add(this.wireframeGroup);
+                this.wireframeGroup.visible = this.showWireframe;
 
                 document.getElementById('loading').classList.add('hidden');
             }
@@ -735,6 +772,12 @@
                     this.resetView();
                     this.seekToFrame(0);
                 }
+                
+                this.showWireframe = false;
+                const wfButton = document.getElementById('toggle-wireframe');
+                wfButton.classList.remove('active');
+                this.wireframeGroup.visible = false;
+                
                 this.updateSelectedTreeItem(path);
             }
 
@@ -774,18 +817,18 @@
             }
 
             setupControls() {
-                // Mouse controls for camera
-                this.renderer.domElement.addEventListener('mousedown', (event) => {
+                const canvas = this.renderer.domElement;
+
+                canvas.addEventListener('mousedown', (event) => {
                     this.mouseDown = true;
                     this.previousMousePosition.set(event.clientX, event.clientY);
                 });
 
-                this.renderer.domElement.addEventListener('mouseup', () => {
+                canvas.addEventListener('mouseup', () => {
                     this.mouseDown = false;
                 });
                 
-                // FIXED: This is the corrected mouse move handler
-                this.renderer.domElement.addEventListener('mousemove', (event) => {
+                canvas.addEventListener('mousemove', (event) => {
                     if (!this.mouseDown) return;
 
                     const deltaMove = new THREE.Vector2(
@@ -793,24 +836,48 @@
                         event.clientY - this.previousMousePosition.y
                     );
 
-                    const spherical = new THREE.Spherical();
-                    spherical.setFromVector3(this.camera.position);
+                    const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
+                    const spherical = new THREE.Spherical().setFromVector3(cameraOffset);
                     
-                    spherical.theta -= deltaMove.x * 0.01;
-                    spherical.phi += deltaMove.y * 0.01;
-                    spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+                    spherical.theta -= deltaMove.x * 0.005;
+                    spherical.phi -= deltaMove.y * 0.005;
+                    spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
                     
-                    // The fix is here: separate the two function calls.
-                    this.camera.position.setFromSpherical(spherical);
-                    this.camera.lookAt(0, 0, 0);
+                    cameraOffset.setFromSpherical(spherical);
+                    this.camera.position.copy(this.cameraTarget).add(cameraOffset);
+                    this.camera.lookAt(this.cameraTarget);
 
                     this.previousMousePosition.set(event.clientX, event.clientY);
                 });
 
-                this.renderer.domElement.addEventListener('wheel', (event) => {
+                canvas.addEventListener('wheel', (event) => {
                     event.preventDefault();
                     const scale = event.deltaY > 0 ? 1.1 : 0.9;
-                    this.camera.position.multiplyScalar(scale);
+                    const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
+                    cameraOffset.multiplyScalar(scale);
+                    this.camera.position.copy(this.cameraTarget).add(cameraOffset);
+                });
+
+                // NEW: Logic for setting camera target with 'C' key + Click
+                window.addEventListener('keydown', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = true; });
+                window.addEventListener('keyup', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = false; });
+
+                canvas.addEventListener('click', (event) => {
+                    if (!this.isCKeyDown || !this.points) return;
+                    
+                    const rect = this.renderer.domElement.getBoundingClientRect();
+                    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+                    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+                    this.raycaster.setFromCamera(this.mouse, this.camera);
+                    const intersects = this.raycaster.intersectObject(this.points);
+
+                    if (intersects.length > 0) {
+                        const intersectionPoint = intersects[0].point;
+                        this.cameraTarget.copy(intersectionPoint);
+                        this.targetIndicator.position.copy(intersectionPoint);
+                        this.camera.lookAt(this.cameraTarget);
+                    }
                 });
                 
                 const resizer = document.getElementById('resizer');
@@ -843,25 +910,28 @@
                     this.seekToFrame(Math.floor(progress * this.frames.length));
                 });
 
-                const pointSizeSlider = document.getElementById('point-size');
-                pointSizeSlider.addEventListener('input', (e) => {
+                document.getElementById('point-size').addEventListener('input', (e) => {
                     document.getElementById('point-size-value').textContent = parseFloat(e.target.value).toFixed(2);
                     this.updatePointSize(parseFloat(e.target.value));
                 });
 
-                const speedSlider = document.getElementById('speed-control');
-                speedSlider.addEventListener('input', (e) => {
+                document.getElementById('speed-control').addEventListener('input', (e) => {
                     this.speed = parseFloat(e.target.value);
                     document.getElementById('speed-value').textContent = this.speed.toFixed(1);
                     this.updatePlaybackSpeed();
                 });
 
-                const fpsSlider = document.getElementById('fps-control');
-                fpsSlider.addEventListener('input', (e) => {
+                document.getElementById('fps-control').addEventListener('input', (e) => {
                     this.fps = parseInt(e.target.value, 10);
                     document.getElementById('fps-value').textContent = this.fps;
                     if (this.isPlaying) this.startPlayback();
                     this.updateUI(); 
+                });
+
+                document.getElementById('toggle-wireframe').addEventListener('click', (e) => {
+                    this.showWireframe = !this.showWireframe;
+                    this.wireframeGroup.visible = this.showWireframe;
+                    e.currentTarget.classList.toggle('active', this.showWireframe);
                 });
 
                 document.getElementById('use-label-colors').addEventListener('click', (e) => {
@@ -874,7 +944,7 @@
                 document.getElementById('folder-upload').addEventListener('change', async (e) => await this.loadDataset(e.target.files));
 
                 document.addEventListener('keydown', (e) => {
-                    if (e.target.tagName === 'INPUT') return;
+                    if (e.target.tagName === 'INPUT' || this.isCKeyDown) return;
                     const keyMap = { 'Space': () => this.togglePlayback(), 'ArrowLeft': () => this.previousFrame(), 'ArrowRight': () => this.nextFrame(), 'KeyR': () => this.resetView() };
                     if (keyMap[e.code]) { e.preventDefault(); keyMap[e.code](); }
                 });
@@ -1018,11 +1088,19 @@
             displayFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
                 const frameData = this.frames[frameIndex];
+
                 if (this.points) {
                     this.scene.remove(this.points);
                     this.points.geometry.dispose();
                     this.points.material.dispose();
                 }
+                while(this.wireframeGroup.children.length) {
+                    const child = this.wireframeGroup.children[0];
+                    this.wireframeGroup.remove(child);
+                    child.geometry.dispose();
+                    child.material.dispose();
+                }
+
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(frameData.positions, 3));
                 geometry.setAttribute('color', new THREE.BufferAttribute(this.generateLabelColors(frameData.labels), 3));
@@ -1033,6 +1111,42 @@
                 });
                 this.points = new THREE.Points(geometry, material);
                 this.scene.add(this.points);
+
+                this.createWireframesForFrame(frameData);
+            }
+
+            createWireframesForFrame(frameData) {
+                const pointsByLabel = new Map();
+                for (let i = 0; i < frameData.labels.length; i++) {
+                    const label = frameData.labels[i];
+                    if (label === 'default' || String(label).toLowerCase().includes('floor') || String(label).toLowerCase().includes('wall') || String(label).toLowerCase().includes('ceiling')) {
+                        continue;
+                    }
+                    if (!pointsByLabel.has(label)) {
+                        pointsByLabel.set(label, []);
+                    }
+                    pointsByLabel.get(label).push(
+                        new THREE.Vector3(
+                            frameData.positions[i * 3],
+                            frameData.positions[i * 3 + 1],
+                            frameData.positions[i * 3 + 2]
+                        )
+                    );
+                }
+
+                document.getElementById('objects-info').textContent = pointsByLabel.size;
+
+                for (const [label, points] of pointsByLabel.entries()) {
+                    if (points.length < 2) continue;
+
+                    const box = new THREE.Box3().setFromPoints(points);
+                    
+                    if (box.isEmpty()) continue;
+
+                    const color = new THREE.Color(...this.getColorForLabel(label));
+                    const helper = new THREE.Box3Helper(box, color);
+                    this.wireframeGroup.add(helper);
+                }
             }
 
             generateLabelColors(labels) {
@@ -1122,7 +1236,9 @@
 
             resetView() {
                 this.camera.position.set(5, 5, 5);
-                this.camera.lookAt(0, 0, 0);
+                this.cameraTarget.set(0, 0, 0);
+                this.targetIndicator.position.copy(this.cameraTarget);
+                this.camera.lookAt(this.cameraTarget);
             }
 
             updateUI() {
