@@ -167,7 +167,6 @@
             border: 1px solid rgba(64, 150, 255, 0.5);
         }
         
-        /* NEW STYLE for the description text */
         .tree-item-description {
             font-size: 12px;
             color: rgba(255, 255, 255, 0.6);
@@ -292,7 +291,7 @@
             background: linear-gradient(90deg, #4096ff, #1890ff);
             border-radius: 3px;
             width: 0%;
-            transition: width 0.1s;
+            transition: width 0.1s linear;
         }
 
         #timeline-handle {
@@ -305,6 +304,7 @@
             cursor: grab;
             transform: translateX(-50%);
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            transition: left 0.1s linear;
         }
 
         .timeline-labels {
@@ -345,6 +345,8 @@
 
         .slider {
             flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
             height: 4px;
             background: rgba(255, 255, 255, 0.1);
             border-radius: 2px;
@@ -409,6 +411,7 @@
             font-size: 12px;
             color: #4096ff;
             min-width: 40px;
+            text-align: right;
         }
     </style>
 </head>
@@ -480,6 +483,12 @@
                         <div class="slider-container">
                             <span class="slider-label">Speed:</span>
                             <input type="range" class="slider" id="speed-control" min="0.1" max="5" step="0.1" value="1">
+                            <span class="point-size-value" id="speed-value">1.0</span>
+                        </div>
+                        <div class="slider-container">
+                            <span class="slider-label">FPS:</span>
+                            <input type="range" class="slider" id="fps-control" min="1" max="60" step="1" value="10">
+                            <span class="point-size-value" id="fps-value">10</span>
                         </div>
                         <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
                         <div class="control-button" id="toggle-stats">📊 Stats</div>
@@ -515,7 +524,7 @@
 
             <!-- Video Player -->
             <div id="video-container">
-                <video id="video-player" class="hidden" controls>
+                <video id="video-player" class="hidden" muted playsinline>
                     Your browser does not support the video tag.
                 </video>
                 <div id="video-placeholder" class="video-placeholder">
@@ -539,7 +548,7 @@
                 this.fps = 10;
                 this.speed = 1.0;
                 this.frameInterval = null;
-                this.useLabelColors = true; // Flag to control color mode
+                this.useLabelColors = true;
                 
                 this.mouse = new THREE.Vector2();
                 this.mouseDown = false;
@@ -547,7 +556,6 @@
                 
                 this.colorMap = this.createColorMap();
                 
-                // Dataset structure
                 this.datasetStructure = {};
                 this.currentPath = [];
                 this.currentScene = null;
@@ -558,22 +566,18 @@
             }
 
             init() {
-                // Setup renderer
                 const viewerContainer = document.getElementById('canvas-container');
                 const rect = viewerContainer.getBoundingClientRect();
                 this.renderer.setSize(rect.width, rect.height);
                 this.renderer.setClearColor(0x0a0a0a, 1);
                 viewerContainer.appendChild(this.renderer.domElement);
 
-                // Setup camera
                 this.camera.position.set(5, 5, 5);
                 this.camera.lookAt(0, 0, 0);
                 this.updateCameraAspect();
 
-                // Setup scene
                 this.scene.background = new THREE.Color(0x0a0a0a);
                 
-                // Add lights
                 const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
                 this.scene.add(ambientLight);
                 
@@ -581,18 +585,15 @@
                 directionalLight.position.set(10, 10, 5);
                 this.scene.add(directionalLight);
 
-                // Add coordinate axes
                 const axesHelper = new THREE.AxesHelper(2);
                 this.scene.add(axesHelper);
 
-                // Hide loading screen initially
                 document.getElementById('loading').classList.add('hidden');
             }
 
             updateCameraAspect() {
                 const viewerContainer = document.getElementById('viewer-container');
                 if (!viewerContainer) return;
-
                 const rect = viewerContainer.getBoundingClientRect();
                 this.camera.aspect = rect.width / rect.height;
                 this.camera.updateProjectionMatrix();
@@ -601,155 +602,99 @@
 
             createColorMap() {
                 return {
-                    'SMPL': [1.0, 0.2, 0.2],
-                    'character': [1.0, 0.4, 0.0],
-                    'person': [1.0, 0.0, 0.8],
-                    'human': [0.8, 0.0, 1.0],
-                    'Floor': [0.7, 0.7, 0.7],
-                    'floor': [0.6, 0.6, 0.6],
-                    'Ceiling': [0.9, 0.9, 0.9],
-                    'ceiling': [0.8, 0.8, 0.8],
-                    'wall': [0.5, 0.5, 0.7],
-                    'Wall': [0.4, 0.4, 0.6],
-                    'chair': [0.6, 0.4, 0.2],
-                    'table': [0.8, 0.6, 0.3],
-                    'box': [0.3, 0.6, 0.3],
-                    'furniture': [0.5, 0.3, 0.1],
-                    'default': [0.8, 0.8, 0.8]
+                    'SMPL': [1.0, 0.2, 0.2], 'character': [1.0, 0.4, 0.0], 'person': [1.0, 0.0, 0.8], 'human': [0.8, 0.0, 1.0],
+                    'Floor': [0.7, 0.7, 0.7], 'floor': [0.6, 0.6, 0.6], 'Ceiling': [0.9, 0.9, 0.9], 'ceiling': [0.8, 0.8, 0.8],
+                    'wall': [0.5, 0.5, 0.7], 'Wall': [0.4, 0.4, 0.6], 'chair': [0.6, 0.4, 0.2], 'table': [0.8, 0.6, 0.3],
+                    'box': [0.3, 0.6, 0.3], 'furniture': [0.5, 0.3, 0.1], 'default': [0.8, 0.8, 0.8]
                 };
             }
 
-            // MODIFIED: This function now looks for and processes JSON description files.
             async buildDatasetStructure(files) {
                 const structure = {};
                 const fileArray = Array.from(files);
 
-                // First pass: build structure and identify files
                 for (const file of fileArray) {
                     const pathParts = file.webkitRelativePath.split('/');
-
-                    if (pathParts.length >= 5) { // e.g., scans/room/prompt/scene/file.ply
-                        const [scansFolder, room, prompt, scene, filename] = pathParts;
-
-                        if (!structure[room]) structure[room] = {};
-                        if (!structure[room][prompt]) structure[room][prompt] = {};
-                        if (!structure[room][prompt][scene]) {
-                            structure[room][prompt][scene] = {
-                                pointCloudFiles: [],
-                                videoFile: null,
-                                descriptionFile: null, // To store the file object
-                                description: null      // To store the final string
-                            };
-                        }
-                        
-                        const sceneData = structure[room][prompt][scene];
-
-                        if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) {
-                            sceneData.pointCloudFiles.push(file);
-                        } else if (filename.toLowerCase().endsWith('.mp4')) {
-                            sceneData.videoFile = file;
-                        } else if (filename.toLowerCase().endsWith('.json')) {
-                            sceneData.descriptionFile = file; // Found a JSON file
-                        }
+                    if (pathParts.length < 5) continue;
+                    
+                    const [scansFolder, room, prompt, scene, filename] = pathParts;
+                    if (!structure[room]) structure[room] = {};
+                    if (!structure[room][prompt]) structure[room][prompt] = {};
+                    if (!structure[room][prompt][scene]) {
+                        structure[room][prompt][scene] = { pointCloudFiles: [], videoFile: null, descriptionFile: null, description: null };
                     }
+                    
+                    const sceneData = structure[room][prompt][scene];
+                    if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) sceneData.pointCloudFiles.push(file);
+                    else if (filename.toLowerCase().endsWith('.mp4')) sceneData.videoFile = file;
+                    else if (filename.toLowerCase().endsWith('.json')) sceneData.descriptionFile = file;
                 }
 
-                // Second pass: process descriptions and sort files
                 for (const room in structure) {
                     for (const prompt in structure[room]) {
                         for (const scene in structure[room][prompt]) {
                             const sceneData = structure[room][prompt][scene];
-                            
-                            // Process description file if it exists
                             if (sceneData.descriptionFile) {
                                 try {
                                     const jsonContent = await sceneData.descriptionFile.text();
                                     const jsonData = JSON.parse(jsonContent);
-                                    if (jsonData.description) {
-                                        sceneData.description = jsonData.description;
-                                    }
+                                    if (jsonData.description) sceneData.description = jsonData.description;
                                 } catch (e) {
                                     console.error(`Error parsing JSON for scene ${scene}:`, e);
                                     sceneData.description = "Error reading description.";
                                 }
                             }
-
-                            // Sort point cloud files
-                            sceneData.pointCloudFiles.sort((a, b) =>
-                                a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-                            );
+                            sceneData.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                         }
                     }
                 }
-
                 return structure;
             }
 
             renderTree() {
                 const container = document.getElementById('tree-container');
                 container.innerHTML = '';
-
                 for (const [roomName, room] of Object.entries(this.datasetStructure)) {
                     const roomNode = this.createTreeNode(roomName, 'folder', '📁', [roomName]);
                     container.appendChild(roomNode);
-
                     const roomChildren = document.createElement('div');
                     roomChildren.className = 'tree-children';
-                    
                     for (const [promptName, prompt] of Object.entries(room)) {
                         const promptNode = this.createTreeNode(promptName, 'folder', '📋', [roomName, promptName]);
                         roomChildren.appendChild(promptNode);
-
                         const promptChildren = document.createElement('div');
                         promptChildren.className = 'tree-children';
-                        
-                        // MODIFIED: Pass the description to createTreeNode
                         for (const [sceneName, scene] of Object.entries(prompt)) {
                             const sceneNode = this.createTreeNode(
-                                `${sceneName} (${scene.pointCloudFiles.length} files)`, 
-                                'scene', 
-                                scene.videoFile ? '🎬' : '📊', 
-                                [roomName, promptName, sceneName],
-                                scene.description // Pass the description text
+                                `${sceneName} (${scene.pointCloudFiles.length} files)`, 'scene', 
+                                scene.videoFile ? '🎬' : '📊', [roomName, promptName, sceneName], scene.description
                             );
                             promptChildren.appendChild(sceneNode);
                         }
-                        
                         promptNode.appendChild(promptChildren);
                     }
-                    
                     roomNode.appendChild(roomChildren);
                 }
             }
             
-            // MODIFIED: This function now accepts a description and renders it.
             createTreeNode(name, type, icon, path, description = null) {
                 const node = document.createElement('div');
                 node.className = 'tree-node';
-                
                 const item = document.createElement('div');
                 item.className = `tree-item ${type}`;
-                item.innerHTML = `
-                    <span class="tree-icon">${icon}</span>
-                    <span>${name}</span>
-                `;
-                
+                item.innerHTML = `<span class="tree-icon">${icon}</span><span>${name}</span>`;
                 if (type === 'scene') {
                     item.addEventListener('click', () => this.loadScene(path));
                 } else {
                     item.addEventListener('click', () => this.toggleFolder(item));
                 }
-                
                 node.appendChild(item);
-
-                // NEW: Add description element if it exists
                 if (description) {
                     const descElement = document.createElement('div');
                     descElement.className = 'tree-item-description';
                     descElement.textContent = description;
                     node.appendChild(descElement);
                 }
-
                 return node;
             }
 
@@ -757,7 +702,7 @@
                 item.classList.toggle('collapsed');
                 const icon = item.querySelector('.tree-icon');
                 if (item.classList.contains('collapsed')) {
-                    icon.textContent = icon.textContent.replace('📁', '📂').replace('�', '📄');
+                    icon.textContent = icon.textContent.replace('📁', '📂').replace('📋', '📄');
                 } else {
                     icon.textContent = icon.textContent.replace('📂', '📁').replace('📄', '📋');
                 }
@@ -766,7 +711,6 @@
             async loadScene(path) {
                 const [room, prompt, scene] = path;
                 const sceneData = this.datasetStructure[room][prompt][scene];
-                
                 if (!sceneData || sceneData.pointCloudFiles.length === 0) return;
                 
                 document.getElementById('loading').classList.remove('hidden');
@@ -778,9 +722,7 @@
                 for (const file of sceneData.pointCloudFiles) {
                     try {
                         const frameData = await this.parseFile(file);
-                        if (frameData) {
-                            this.frames.push(frameData);
-                        }
+                        if (frameData) this.frames.push(frameData);
                     } catch (error) {
                         console.error(`Error loading file ${file.name}:`, error);
                     }
@@ -788,14 +730,11 @@
                 
                 document.getElementById('loading').classList.add('hidden');
                 
-                if (this.frames.length > 0) {
-                    this.currentFrame = 0;
-                    this.displayFrame(0);
-                    this.updateUI();
-                    this.resetView();
-                }
-                
                 this.loadVideo(sceneData.videoFile);
+                if (this.frames.length > 0) {
+                    this.resetView();
+                    this.seekToFrame(0);
+                }
                 this.updateSelectedTreeItem(path);
             }
 
@@ -803,11 +742,15 @@
                 const videoPlayer = document.getElementById('video-player');
                 const videoPlaceholder = document.getElementById('video-placeholder');
                 
+                if (this.videoURL) URL.revokeObjectURL(this.videoURL);
+
                 if (videoFile) {
-                    const videoURL = URL.createObjectURL(videoFile);
-                    videoPlayer.src = videoURL;
+                    this.videoURL = URL.createObjectURL(videoFile);
+                    videoPlayer.src = this.videoURL;
                     videoPlayer.classList.remove('hidden');
                     videoPlaceholder.classList.add('hidden');
+                    videoPlayer.pause();
+                    videoPlayer.currentTime = 0;
                 } else {
                     videoPlayer.classList.add('hidden');
                     videoPlaceholder.classList.remove('hidden');
@@ -816,25 +759,15 @@
             }
 
             updateBreadcrumb(path) {
-                const breadcrumb = document.getElementById('breadcrumb');
                 const [room, prompt, scene] = path;
-                breadcrumb.innerHTML = `
-                    <span class="breadcrumb-item">${room}</span> → 
-                    <span class="breadcrumb-item">${prompt}</span> → 
-                    <span class="breadcrumb-item">${scene}</span>
-                `;
+                document.getElementById('breadcrumb').innerHTML = `<span class="breadcrumb-item">${room}</span> → <span class="breadcrumb-item">${prompt}</span> → <span class="breadcrumb-item">${scene}</span>`;
             }
 
             updateSelectedTreeItem(path) {
-                document.querySelectorAll('.tree-item.selected').forEach(item => {
-                    item.classList.remove('selected');
-                });
-                
+                document.querySelectorAll('.tree-item.selected').forEach(item => item.classList.remove('selected'));
                 const [,, sceneNameFromPath] = path;
-                const treeItems = document.querySelectorAll('.tree-item.scene');
-                treeItems.forEach(item => {
-                    const text = item.textContent.trim();
-                    if (text.startsWith(sceneNameFromPath)) {
+                document.querySelectorAll('.tree-item.scene').forEach(item => {
+                    if (item.textContent.trim().startsWith(sceneNameFromPath)) {
                         item.classList.add('selected');
                     }
                 });
@@ -850,7 +783,8 @@
                 this.renderer.domElement.addEventListener('mouseup', () => {
                     this.mouseDown = false;
                 });
-
+                
+                // FIXED: This is the corrected mouse move handler
                 this.renderer.domElement.addEventListener('mousemove', (event) => {
                     if (!this.mouseDown) return;
 
@@ -865,7 +799,8 @@
                     spherical.theta -= deltaMove.x * 0.01;
                     spherical.phi += deltaMove.y * 0.01;
                     spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
-
+                    
+                    // The fix is here: separate the two function calls.
                     this.camera.position.setFromSpherical(spherical);
                     this.camera.lookAt(0, 0, 0);
 
@@ -881,32 +816,20 @@
                 const resizer = document.getElementById('resizer');
                 const videoContainer = document.getElementById('video-container');
                 const mainContent = document.getElementById('main-content');
-
-                const onMouseDown = (e) => {
+                resizer.addEventListener('mousedown', (e) => {
                     e.preventDefault();
-                    let initialHeight = videoContainer.offsetHeight;
-                    let initialMouseY = e.clientY;
-
-                    const onMouseMove = (moveEvent) => {
-                        const deltaY = moveEvent.clientY - initialMouseY;
-                        let newHeight = initialHeight - deltaY;
-                        const maxHeight = mainContent.offsetHeight - 150;
-                        const minHeight = 50;
-                        if (newHeight < minHeight) newHeight = minHeight;
-                        if (newHeight > maxHeight) newHeight = maxHeight;
-                        videoContainer.style.height = `${newHeight}px`;
+                    let h = videoContainer.offsetHeight, y = e.clientY;
+                    const onMove = (me) => {
+                        let newH = h - (me.clientY - y);
+                        newH = Math.max(50, Math.min(mainContent.offsetHeight - 150, newH));
+                        videoContainer.style.height = `${newH}px`;
                         this.updateCameraAspect();
                     };
+                    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                });
 
-                    const onMouseUp = () => {
-                        document.removeEventListener('mousemove', onMouseMove);
-                        document.removeEventListener('mouseup', onMouseUp);
-                    };
-
-                    document.addEventListener('mousemove', onMouseMove);
-                    document.addEventListener('mouseup', onMouseUp);
-                };
-                resizer.addEventListener('mousedown', onMouseDown);
 
                 // UI Controls
                 document.getElementById('play-pause').addEventListener('click', () => this.togglePlayback());
@@ -914,68 +837,61 @@
                 document.getElementById('next-frame').addEventListener('click', () => this.nextFrame());
                 document.getElementById('reset-view').addEventListener('click', () => this.resetView());
                 
-                const timeline = document.getElementById('timeline');
-                timeline.addEventListener('click', (event) => {
-                    const rect = timeline.getBoundingClientRect();
+                document.getElementById('timeline').addEventListener('click', (event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
                     const progress = (event.clientX - rect.left) / rect.width;
                     this.seekToFrame(Math.floor(progress * this.frames.length));
                 });
 
                 const pointSizeSlider = document.getElementById('point-size');
-                const pointSizeValue = document.getElementById('point-size-value');
-                pointSizeSlider.addEventListener('input', (event) => {
-                    const value = parseFloat(event.target.value);
-                    pointSizeValue.textContent = value.toFixed(2);
-                    this.updatePointSize(value);
+                pointSizeSlider.addEventListener('input', (e) => {
+                    document.getElementById('point-size-value').textContent = parseFloat(e.target.value).toFixed(2);
+                    this.updatePointSize(parseFloat(e.target.value));
                 });
 
-                document.getElementById('speed-control').addEventListener('input', (event) => {
-                    this.speed = parseFloat(event.target.value);
+                const speedSlider = document.getElementById('speed-control');
+                speedSlider.addEventListener('input', (e) => {
+                    this.speed = parseFloat(e.target.value);
+                    document.getElementById('speed-value').textContent = this.speed.toFixed(1);
                     this.updatePlaybackSpeed();
                 });
 
-                document.getElementById('use-label-colors').addEventListener('click', () => {
+                const fpsSlider = document.getElementById('fps-control');
+                fpsSlider.addEventListener('input', (e) => {
+                    this.fps = parseInt(e.target.value, 10);
+                    document.getElementById('fps-value').textContent = this.fps;
+                    if (this.isPlaying) this.startPlayback();
+                    this.updateUI(); 
+                });
+
+                document.getElementById('use-label-colors').addEventListener('click', (e) => {
                     this.useLabelColors = !this.useLabelColors;
-                    const button = document.getElementById('use-label-colors');
-                    button.classList.toggle('active', this.useLabelColors);
-                    button.innerHTML = this.useLabelColors ? '🎨 Label Colors' : '📸 Original Colors';
-                    if (this.frames.length > 0) {
-                        this.displayFrame(this.currentFrame);
-                    }
+                    e.currentTarget.classList.toggle('active', this.useLabelColors);
+                    e.currentTarget.innerHTML = this.useLabelColors ? '🎨 Label Colors' : '📸 Original Colors';
+                    if (this.frames.length > 0) this.displayFrame(this.currentFrame);
                 });
 
-                document.getElementById('folder-upload').addEventListener('change', async (event) => {
-                    await this.loadDataset(event.target.files);
+                document.getElementById('folder-upload').addEventListener('change', async (e) => await this.loadDataset(e.target.files));
+
+                document.addEventListener('keydown', (e) => {
+                    if (e.target.tagName === 'INPUT') return;
+                    const keyMap = { 'Space': () => this.togglePlayback(), 'ArrowLeft': () => this.previousFrame(), 'ArrowRight': () => this.nextFrame(), 'KeyR': () => this.resetView() };
+                    if (keyMap[e.code]) { e.preventDefault(); keyMap[e.code](); }
                 });
 
-                document.addEventListener('keydown', (event) => {
-                    if (event.target.tagName === 'INPUT') return;
-                    switch(event.code) {
-                        case 'Space': event.preventDefault(); this.togglePlayback(); break;
-                        case 'ArrowLeft': event.preventDefault(); this.previousFrame(); break;
-                        case 'ArrowRight': event.preventDefault(); this.nextFrame(); break;
-                        case 'KeyR': event.preventDefault(); this.resetView(); break;
-                    }
-                });
-
-                window.addEventListener('resize', () => {
-                    this.updateCameraAspect();
-                });
+                window.addEventListener('resize', () => this.updateCameraAspect());
             }
 
             async loadDataset(files) {
                 if (!files || files.length === 0) return;
-                
                 document.getElementById('loading').classList.remove('hidden');
-                
                 try {
                     this.datasetStructure = await this.buildDatasetStructure(files);
                     this.renderTree();
                     document.getElementById('breadcrumb').innerHTML = '<span>Dataset loaded - select a scene</span>';
                 } catch (error) {
                     console.error('Error loading dataset:', error);
-                    const breadcrumb = document.getElementById('breadcrumb');
-                    breadcrumb.innerHTML = '<span style="color: #ff4d4f;">Error loading dataset.</span>';
+                    document.getElementById('breadcrumb').innerHTML = '<span style="color: #ff4d4f;">Error loading dataset.</span>';
                 } finally {
                     document.getElementById('loading').classList.add('hidden');
                 }
@@ -984,26 +900,17 @@
             async parseFile(file) {
                 return new Promise((resolve, reject) => {
                     const reader = new FileReader();
-                    reader.onload = (event) => {
+                    reader.onload = (e) => {
                         try {
-                            const content = event.target.result;
+                            const c = e.target.result;
+                            const ext = file.name.split('.').pop().toLowerCase();
                             let frameData;
-                            
-                            if (file.name.toLowerCase().endsWith('.ply')) {
-                                frameData = this.parsePLY(content);
-                            } else if (file.name.toLowerCase().endsWith('.txt') || file.name.toLowerCase().endsWith('.xyz')) {
-                                frameData = this.parseXYZ(content);
-                            } else if (file.name.toLowerCase().endsWith('.pcd')) {
-                                frameData = this.parsePCD(content);
-                            } else {
-                                reject(new Error('Unsupported file format'));
-                                return;
-                            }
-                            
+                            if (ext === 'ply') frameData = this.parsePLY(c);
+                            else if (ext === 'txt' || ext === 'xyz') frameData = this.parseXYZ(c);
+                            else if (ext === 'pcd') frameData = this.parsePCD(c);
+                            else reject(new Error('Unsupported file format'));
                             resolve(frameData);
-                        } catch (error) {
-                            reject(error);
-                        }
+                        } catch (error) { reject(error); }
                     };
                     reader.onerror = () => reject(new Error('Failed to read file'));
                     reader.readAsText(file);
@@ -1013,64 +920,54 @@
             parsePLY(content) {
                 const lines = content.split('\n');
                 let dataStartIndex = 0;
-                
                 for (let i = 0; i < lines.length; i++) {
                     if (lines[i].trim() === 'end_header') {
                         dataStartIndex = i + 1;
                         break;
                     }
                 }
-                
                 const positions = [];
                 const labels = [];
-                
                 for (let i = dataStartIndex; i < lines.length; i++) {
                     const line = lines[i].trim();
                     if (!line) continue;
-                    
                     const parts = line.split(/\s+/);
                     if (parts.length >= 3) {
                         const x = parseFloat(parts[0]);
                         const y = parseFloat(parts[1]);
                         const z = parseFloat(parts[2]);
-                        
                         if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
                             positions.push(x, y, z);
                             labels.push(parts.length > 3 ? parts[3] : 'default');
                         }
                     }
                 }
-                
                 return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
             }
-            
+
             parseXYZ(content) {
                 const lines = content.split('\n');
                 const positions = [];
                 const labels = [];
-                
                 for (const line of lines) {
                     const parts = line.trim().split(/\s+/);
                     if (parts.length >= 3) {
                         const x = parseFloat(parts[0]);
                         const y = parseFloat(parts[1]);
                         const z = parseFloat(parts[2]);
-                        
                         if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
                             positions.push(x, y, z);
                             labels.push(parts.length > 3 ? parts[3] : 'default');
                         }
                     }
                 }
-                
                 return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
             }
-            
+
             parsePCD(content) {
                 const lines = content.split('\n');
                 let dataStart = 0, pointCount = 0, dataFormat = 'ascii';
                 const fields = [];
-                
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i].trim();
                     if (line.startsWith('FIELDS')) fields.push(...line.split(' ').slice(1).map(n => n.toLowerCase()));
@@ -1081,13 +978,10 @@
                         break;
                     }
                 }
-                
                 if (dataFormat !== 'ascii') throw new Error('Only ASCII PCD format is supported');
-                
                 const positions = [], labels = [];
                 const xIndex = fields.indexOf('x'), yIndex = fields.indexOf('y'), zIndex = fields.indexOf('z');
                 const labelIndex = fields.includes('label') ? fields.indexOf('label') : fields.indexOf('semantic');
-                
                 for (let i = dataStart; i < dataStart + pointCount && i < lines.length; i++) {
                     const parts = lines[i].trim().split(/\s+/);
                     if (parts.length >= 3) {
@@ -1098,74 +992,62 @@
                         }
                     }
                 }
-                
                 return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
             }
 
             getColorForLabel(label) {
-                const labelLower = String(label).toLowerCase();
+                const l = String(label).toLowerCase();
                 if (this.colorMap[label]) return this.colorMap[label];
-                if (this.colorMap[labelLower]) return this.colorMap[labelLower];
-                
-                for (const key in this.colorMap) {
-                    if (labelLower.includes(key.toLowerCase())) return this.colorMap[key];
+                if (this.colorMap[l]) return this.colorMap[l];
+                for (const k in this.colorMap) {
+                    if (l.includes(k.toLowerCase())) return this.colorMap[k];
                 }
                 return this.generateColorFromLabel(label);
             }
 
             generateColorFromLabel(label) {
-                let hash = 0;
-                const strLabel = String(label);
-                for (let i = 0; i < strLabel.length; i++) {
-                    const char = strLabel.charCodeAt(i);
-                    hash = ((hash << 5) - hash) + char;
-                    hash = hash & hash;
+                let h = 0;
+                const s = String(label);
+                for (let i = 0; i < s.length; i++) {
+                    h = ((h << 5) - h) + s.charCodeAt(i);
+                    h &= h;
                 }
-                return [(hash & 0xFF) / 255, ((hash >> 8) & 0xFF) / 255, ((hash >> 16) & 0xFF) / 255];
+                return [(h & 0xFF) / 255, ((h >> 8) & 0xFF) / 255, ((h >> 16) & 0xFF) / 255];
             }
             
             displayFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
-                
                 const frameData = this.frames[frameIndex];
-                
                 if (this.points) {
                     this.scene.remove(this.points);
                     this.points.geometry.dispose();
                     this.points.material.dispose();
                 }
-                
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(frameData.positions, 3));
-                
-                const finalColors = this.generateLabelColors(frameData.labels);
-                geometry.setAttribute('color', new THREE.BufferAttribute(finalColors, 3));
-                
+                geometry.setAttribute('color', new THREE.BufferAttribute(this.generateLabelColors(frameData.labels), 3));
                 const material = new THREE.PointsMaterial({
                     size: parseFloat(document.getElementById('point-size').value),
                     vertexColors: true,
                     sizeAttenuation: true
                 });
-                
                 this.points = new THREE.Points(geometry, material);
                 this.scene.add(this.points);
-                
-                this.currentFrame = frameIndex;
             }
 
             generateLabelColors(labels) {
-                const colors = new Float32Array(labels.length * 3);
+                const c = new Float32Array(labels.length * 3);
                 for (let i = 0; i < labels.length; i++) {
-                    const colorArr = this.getColorForLabel(labels[i]);
-                    colors[i * 3] = colorArr[0];
-                    colors[i * 3 + 1] = colorArr[1];
-                    colors[i * 3 + 2] = colorArr[2];
+                    const ca = this.getColorForLabel(labels[i]);
+                    c[i * 3] = ca[0];
+                    c[i * 3 + 1] = ca[1];
+                    c[i * 3 + 2] = ca[2];
                 }
-                return colors;
+                return c;
             }
 
             updatePointSize(size) {
-                if (this.points && this.points.material) {
+                if (this.points?.material) {
                     this.points.material.size = size;
                 }
             }
@@ -1175,13 +1057,17 @@
                 this.isPlaying = !this.isPlaying;
                 const playIcon = document.getElementById('play-icon');
                 const playText = document.getElementById('play-text');
+                const video = document.getElementById('video-player');
+                
                 if (this.isPlaying) {
                     playIcon.textContent = '⏸️';
                     playText.textContent = 'Pause';
+                    video.play().catch(e => console.error("Video play failed:", e));
                     this.startPlayback();
                 } else {
                     playIcon.textContent = '▶️';
                     playText.textContent = 'Play';
+                    video.pause();
                     this.stopPlayback();
                 }
             }
@@ -1190,7 +1076,13 @@
                 if (this.frameInterval) clearInterval(this.frameInterval);
                 const interval = (1000 / this.fps) / this.speed;
                 this.frameInterval = setInterval(() => {
-                    this.seekToFrame((this.currentFrame + 1) % this.frames.length);
+                    let nextFrame = this.currentFrame + 1;
+                    if (nextFrame >= this.frames.length) {
+                        nextFrame = 0;
+                        const video = document.getElementById('video-player');
+                        if (video) video.currentTime = 0;
+                    }
+                    this.seekToFrame(nextFrame);
                 }, interval);
             }
 
@@ -1210,15 +1102,22 @@
 
             previousFrame() {
                 if (this.frames.length === 0) return;
-                const newFrame = this.currentFrame === 0 ? this.frames.length - 1 : this.currentFrame - 1;
-                this.seekToFrame(newFrame);
+                this.seekToFrame(this.currentFrame === 0 ? this.frames.length - 1 : this.currentFrame - 1);
             }
 
             seekToFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
+                
                 this.currentFrame = frameIndex;
                 this.displayFrame(this.currentFrame);
                 this.updateUI();
+
+                const video = document.getElementById('video-player');
+                const timeInSeconds = this.currentFrame / this.fps;
+
+                if (video && video.readyState > 0 && !video.seeking) {
+                    video.currentTime = timeInSeconds;
+                }
             }
 
             resetView() {
@@ -1238,7 +1137,7 @@
                 }
                 
                 const currentTime = this.frames.length > 0 ? (this.currentFrame / this.fps) : 0;
-                const totalTime = this.frames.length > 0 ? ((this.frames.length -1) / this.fps) : 0;
+                const totalTime = this.frames.length > 0 ? ((this.frames.length - 1) / this.fps) : 0;
                 document.getElementById('current-time').textContent = this.formatTime(currentTime);
                 document.getElementById('total-time').textContent = this.formatTime(totalTime);
             }
@@ -1252,22 +1151,17 @@
 
             animate() {
                 requestAnimationFrame(() => this.animate());
-                
                 const now = performance.now();
                 if (this.lastTime) {
                     const delta = now - this.lastTime;
                     if (delta > 0) document.getElementById('fps-info').textContent = Math.round(1000 / delta);
                 }
                 this.lastTime = now;
-                
                 this.renderer.render(this.scene, this.camera);
             }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            new HierarchicalPointCloudViewer();
-        });
+        document.addEventListener('DOMContentLoaded', () => new HierarchicalPointCloudViewer());
     </script>
 </body>
 </html>
-�
