@@ -1,0 +1,1273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hierarchical Point Cloud Dataset Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            overflow: hidden;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+        }
+
+        #sidebar {
+            width: 300px;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            overflow-y: auto;
+            z-index: 1001;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #main-content {
+            flex: 1;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* Prevent content from spilling out */
+        }
+
+        #viewer-container {
+            flex: 1; /* Allows the viewer to grow and shrink */
+            position: relative;
+            min-height: 150px; /* Minimum height for the 3D viewer */
+        }
+
+        #resizer {
+            height: 8px;
+            background: #333;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            cursor: ns-resize; /* Vertical resize cursor */
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+        
+        #resizer:hover {
+            background: #4096ff;
+        }
+
+        #video-container {
+            height: 200px; /* Initial height */
+            min-height: 50px; /* Minimum resizable height */
+            background: rgba(0, 0, 0, 0.8);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+            flex-shrink: 0; /* Prevent the container from shrinking */
+            position: relative;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        .ui-panel {
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Sidebar Styles */
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(64, 150, 255, 0.1);
+        }
+
+        .sidebar-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #4096ff;
+        }
+
+        .folder-upload {
+            background: rgba(64, 150, 255, 0.2);
+            border: 1px solid rgba(64, 150, 255, 0.4);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            display: block;
+            width: 100%;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .folder-upload:hover {
+            background: rgba(64, 150, 255, 0.3);
+        }
+
+        .tree-container {
+            padding: 10px;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .tree-node {
+            margin: 2px 0;
+        }
+
+        .tree-item {
+            display: flex;
+            align-items: center;
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .tree-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .tree-item.selected {
+            background: rgba(64, 150, 255, 0.3);
+            border: 1px solid rgba(64, 150, 255, 0.5);
+        }
+        
+        /* NEW STYLE for the description text */
+        .tree-item-description {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            padding: 2px 8px 8px 44px; /* Align with tree item text */
+            font-style: italic;
+            white-space: normal;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .tree-icon {
+            margin-right: 8px;
+            font-size: 12px;
+            width: 16px;
+            text-align: center;
+        }
+
+        .tree-children {
+            margin-left: 20px;
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            padding-left: 10px;
+        }
+
+        .tree-item.folder {
+            color: #4096ff;
+            font-weight: 500;
+        }
+
+        .tree-item.scene {
+            color: #52c41a;
+        }
+
+        .tree-item.collapsed + .tree-children {
+            display: none;
+        }
+
+        /* Video Styles */
+        #video-player {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+        }
+
+        .video-placeholder {
+            color: rgba(255, 255, 255, 0.5);
+            text-align: center;
+            font-style: italic;
+        }
+
+        /* Controls Panel */
+        #controls-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            min-width: 500px;
+        }
+
+        #info-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            min-width: 280px;
+        }
+
+        #settings-panel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            min-width: 200px;
+        }
+
+        .control-button {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .control-button:active {
+            transform: scale(0.95);
+        }
+
+        .control-button.active {
+            background: rgba(64, 150, 255, 0.3);
+            border-color: rgba(64, 150, 255, 0.5);
+        }
+
+        #timeline-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        #timeline {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        #timeline-progress {
+            height: 100%;
+            background: linear-gradient(90deg, #4096ff, #1890ff);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.1s;
+        }
+
+        #timeline-handle {
+            position: absolute;
+            top: -6px;
+            width: 18px;
+            height: 18px;
+            background: #4096ff;
+            border-radius: 50%;
+            cursor: grab;
+            transform: translateX(-50%);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .timeline-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .info-label {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .info-value {
+            color: #4096ff;
+            font-weight: 500;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .slider-label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            min-width: 60px;
+        }
+
+        .slider {
+            flex: 1;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #4096ff;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        #folder-upload {
+            display: none;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 2000;
+        }
+
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid #4096ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .breadcrumb {
+            padding: 10px 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .breadcrumb-item {
+            color: #4096ff;
+        }
+
+        .point-size-value {
+            font-size: 12px;
+            color: #4096ff;
+            min-width: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <!-- Sidebar for navigation -->
+        <div id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-title">Dataset Navigator</div>
+                <label for="folder-upload" class="folder-upload">📁 Load Dataset Folder</label>
+                <input type="file" id="folder-upload" webkitdirectory directory>
+            </div>
+            
+            <div class="breadcrumb" id="breadcrumb">
+                <span>No dataset loaded</span>
+            </div>
+            
+            <div class="tree-container" id="tree-container">
+                <div class="tree-item" style="color: rgba(255,255,255,0.5); font-style: italic;">
+                    Load a dataset folder to begin navigation
+                </div>
+            </div>
+        </div>
+
+        <!-- Main content area -->
+        <div id="main-content">
+            <!-- 3D Viewer -->
+            <div id="viewer-container">
+                <div id="canvas-container"></div>
+                
+                <div id="loading" class="loading hidden">
+                    <div class="loading-spinner"></div>
+                    <div>Loading Point Cloud Data...</div>
+                </div>
+
+                <div id="ui-overlay">
+                    <!-- Info Panel -->
+                    <div id="info-panel" class="ui-panel">
+                        <div class="info-row">
+                            <span class="info-label">Scene:</span>
+                            <span class="info-value" id="scene-info">None</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Frame:</span>
+                            <span class="info-value" id="frame-info">0 / 0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Points:</span>
+                            <span class="info-value" id="points-info">0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Objects:</span>
+                            <span class="info-value" id="objects-info">0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">FPS:</span>
+                            <span class="info-value" id="fps-info">0</span>
+                        </div>
+                        <div class="control-button" id="reset-view">🔄 Reset View</div>
+                    </div>
+
+                    <!-- Settings Panel -->
+                    <div id="settings-panel" class="ui-panel">
+                        <div class="slider-container">
+                            <span class="slider-label">Point Size:</span>
+                            <input type="range" class="slider" id="point-size" min="0.01" max="2" step="0.01" value="0.3">
+                            <span class="point-size-value" id="point-size-value">0.3</span>
+                        </div>
+                        <div class="slider-container">
+                            <span class="slider-label">Speed:</span>
+                            <input type="range" class="slider" id="speed-control" min="0.1" max="5" step="0.1" value="1">
+                        </div>
+                        <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
+                        <div class="control-button" id="toggle-stats">📊 Stats</div>
+                        <div class="control-button" id="use-label-colors">🎨 Label Colors</div>
+                    </div>
+
+                    <!-- Controls Panel -->
+                    <div id="controls-panel" class="ui-panel">
+                        <div class="control-button" id="play-pause">
+                            <span id="play-icon">▶️</span>
+                            <span id="play-text">Play</span>
+                        </div>
+                        
+                        <div class="control-button" id="prev-frame">⏮️ Prev</div>
+                        <div class="control-button" id="next-frame">⏭️ Next</div>
+                        
+                        <div id="timeline-container">
+                            <div id="timeline">
+                                <div id="timeline-progress"></div>
+                                <div id="timeline-handle"></div>
+                            </div>
+                            <div class="timeline-labels">
+                                <span id="current-time">00:00</span>
+                                <span id="total-time">00:00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Draggable Resizer Handle -->
+            <div id="resizer"></div>
+
+            <!-- Video Player -->
+            <div id="video-container">
+                <video id="video-player" class="hidden" controls>
+                    Your browser does not support the video tag.
+                </video>
+                <div id="video-placeholder" class="video-placeholder">
+                    Select a scene to view associated video
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class HierarchicalPointCloudViewer {
+            constructor() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                
+                this.points = null;
+                this.frames = [];
+                this.currentFrame = 0;
+                this.isPlaying = false;
+                this.fps = 10;
+                this.speed = 1.0;
+                this.frameInterval = null;
+                this.useLabelColors = true; // Flag to control color mode
+                
+                this.mouse = new THREE.Vector2();
+                this.mouseDown = false;
+                this.previousMousePosition = new THREE.Vector2();
+                
+                this.colorMap = this.createColorMap();
+                
+                // Dataset structure
+                this.datasetStructure = {};
+                this.currentPath = [];
+                this.currentScene = null;
+                
+                this.init();
+                this.setupControls();
+                this.animate();
+            }
+
+            init() {
+                // Setup renderer
+                const viewerContainer = document.getElementById('canvas-container');
+                const rect = viewerContainer.getBoundingClientRect();
+                this.renderer.setSize(rect.width, rect.height);
+                this.renderer.setClearColor(0x0a0a0a, 1);
+                viewerContainer.appendChild(this.renderer.domElement);
+
+                // Setup camera
+                this.camera.position.set(5, 5, 5);
+                this.camera.lookAt(0, 0, 0);
+                this.updateCameraAspect();
+
+                // Setup scene
+                this.scene.background = new THREE.Color(0x0a0a0a);
+                
+                // Add lights
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(10, 10, 5);
+                this.scene.add(directionalLight);
+
+                // Add coordinate axes
+                const axesHelper = new THREE.AxesHelper(2);
+                this.scene.add(axesHelper);
+
+                // Hide loading screen initially
+                document.getElementById('loading').classList.add('hidden');
+            }
+
+            updateCameraAspect() {
+                const viewerContainer = document.getElementById('viewer-container');
+                if (!viewerContainer) return;
+
+                const rect = viewerContainer.getBoundingClientRect();
+                this.camera.aspect = rect.width / rect.height;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(rect.width, rect.height);
+            }
+
+            createColorMap() {
+                return {
+                    'SMPL': [1.0, 0.2, 0.2],
+                    'character': [1.0, 0.4, 0.0],
+                    'person': [1.0, 0.0, 0.8],
+                    'human': [0.8, 0.0, 1.0],
+                    'Floor': [0.7, 0.7, 0.7],
+                    'floor': [0.6, 0.6, 0.6],
+                    'Ceiling': [0.9, 0.9, 0.9],
+                    'ceiling': [0.8, 0.8, 0.8],
+                    'wall': [0.5, 0.5, 0.7],
+                    'Wall': [0.4, 0.4, 0.6],
+                    'chair': [0.6, 0.4, 0.2],
+                    'table': [0.8, 0.6, 0.3],
+                    'box': [0.3, 0.6, 0.3],
+                    'furniture': [0.5, 0.3, 0.1],
+                    'default': [0.8, 0.8, 0.8]
+                };
+            }
+
+            // MODIFIED: This function now looks for and processes JSON description files.
+            async buildDatasetStructure(files) {
+                const structure = {};
+                const fileArray = Array.from(files);
+
+                // First pass: build structure and identify files
+                for (const file of fileArray) {
+                    const pathParts = file.webkitRelativePath.split('/');
+
+                    if (pathParts.length >= 5) { // e.g., scans/room/prompt/scene/file.ply
+                        const [scansFolder, room, prompt, scene, filename] = pathParts;
+
+                        if (!structure[room]) structure[room] = {};
+                        if (!structure[room][prompt]) structure[room][prompt] = {};
+                        if (!structure[room][prompt][scene]) {
+                            structure[room][prompt][scene] = {
+                                pointCloudFiles: [],
+                                videoFile: null,
+                                descriptionFile: null, // To store the file object
+                                description: null      // To store the final string
+                            };
+                        }
+                        
+                        const sceneData = structure[room][prompt][scene];
+
+                        if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) {
+                            sceneData.pointCloudFiles.push(file);
+                        } else if (filename.toLowerCase().endsWith('.mp4')) {
+                            sceneData.videoFile = file;
+                        } else if (filename.toLowerCase().endsWith('.json')) {
+                            sceneData.descriptionFile = file; // Found a JSON file
+                        }
+                    }
+                }
+
+                // Second pass: process descriptions and sort files
+                for (const room in structure) {
+                    for (const prompt in structure[room]) {
+                        for (const scene in structure[room][prompt]) {
+                            const sceneData = structure[room][prompt][scene];
+                            
+                            // Process description file if it exists
+                            if (sceneData.descriptionFile) {
+                                try {
+                                    const jsonContent = await sceneData.descriptionFile.text();
+                                    const jsonData = JSON.parse(jsonContent);
+                                    if (jsonData.description) {
+                                        sceneData.description = jsonData.description;
+                                    }
+                                } catch (e) {
+                                    console.error(`Error parsing JSON for scene ${scene}:`, e);
+                                    sceneData.description = "Error reading description.";
+                                }
+                            }
+
+                            // Sort point cloud files
+                            sceneData.pointCloudFiles.sort((a, b) =>
+                                a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+                            );
+                        }
+                    }
+                }
+
+                return structure;
+            }
+
+            renderTree() {
+                const container = document.getElementById('tree-container');
+                container.innerHTML = '';
+
+                for (const [roomName, room] of Object.entries(this.datasetStructure)) {
+                    const roomNode = this.createTreeNode(roomName, 'folder', '📁', [roomName]);
+                    container.appendChild(roomNode);
+
+                    const roomChildren = document.createElement('div');
+                    roomChildren.className = 'tree-children';
+                    
+                    for (const [promptName, prompt] of Object.entries(room)) {
+                        const promptNode = this.createTreeNode(promptName, 'folder', '📋', [roomName, promptName]);
+                        roomChildren.appendChild(promptNode);
+
+                        const promptChildren = document.createElement('div');
+                        promptChildren.className = 'tree-children';
+                        
+                        // MODIFIED: Pass the description to createTreeNode
+                        for (const [sceneName, scene] of Object.entries(prompt)) {
+                            const sceneNode = this.createTreeNode(
+                                `${sceneName} (${scene.pointCloudFiles.length} files)`, 
+                                'scene', 
+                                scene.videoFile ? '🎬' : '📊', 
+                                [roomName, promptName, sceneName],
+                                scene.description // Pass the description text
+                            );
+                            promptChildren.appendChild(sceneNode);
+                        }
+                        
+                        promptNode.appendChild(promptChildren);
+                    }
+                    
+                    roomNode.appendChild(roomChildren);
+                }
+            }
+            
+            // MODIFIED: This function now accepts a description and renders it.
+            createTreeNode(name, type, icon, path, description = null) {
+                const node = document.createElement('div');
+                node.className = 'tree-node';
+                
+                const item = document.createElement('div');
+                item.className = `tree-item ${type}`;
+                item.innerHTML = `
+                    <span class="tree-icon">${icon}</span>
+                    <span>${name}</span>
+                `;
+                
+                if (type === 'scene') {
+                    item.addEventListener('click', () => this.loadScene(path));
+                } else {
+                    item.addEventListener('click', () => this.toggleFolder(item));
+                }
+                
+                node.appendChild(item);
+
+                // NEW: Add description element if it exists
+                if (description) {
+                    const descElement = document.createElement('div');
+                    descElement.className = 'tree-item-description';
+                    descElement.textContent = description;
+                    node.appendChild(descElement);
+                }
+
+                return node;
+            }
+
+            toggleFolder(item) {
+                item.classList.toggle('collapsed');
+                const icon = item.querySelector('.tree-icon');
+                if (item.classList.contains('collapsed')) {
+                    icon.textContent = icon.textContent.replace('📁', '📂').replace('�', '📄');
+                } else {
+                    icon.textContent = icon.textContent.replace('📂', '📁').replace('📄', '📋');
+                }
+            }
+
+            async loadScene(path) {
+                const [room, prompt, scene] = path;
+                const sceneData = this.datasetStructure[room][prompt][scene];
+                
+                if (!sceneData || sceneData.pointCloudFiles.length === 0) return;
+                
+                document.getElementById('loading').classList.remove('hidden');
+                this.frames = [];
+                this.currentScene = { room, prompt, scene };
+                
+                this.updateBreadcrumb(path);
+                
+                for (const file of sceneData.pointCloudFiles) {
+                    try {
+                        const frameData = await this.parseFile(file);
+                        if (frameData) {
+                            this.frames.push(frameData);
+                        }
+                    } catch (error) {
+                        console.error(`Error loading file ${file.name}:`, error);
+                    }
+                }
+                
+                document.getElementById('loading').classList.add('hidden');
+                
+                if (this.frames.length > 0) {
+                    this.currentFrame = 0;
+                    this.displayFrame(0);
+                    this.updateUI();
+                    this.resetView();
+                }
+                
+                this.loadVideo(sceneData.videoFile);
+                this.updateSelectedTreeItem(path);
+            }
+
+            loadVideo(videoFile) {
+                const videoPlayer = document.getElementById('video-player');
+                const videoPlaceholder = document.getElementById('video-placeholder');
+                
+                if (videoFile) {
+                    const videoURL = URL.createObjectURL(videoFile);
+                    videoPlayer.src = videoURL;
+                    videoPlayer.classList.remove('hidden');
+                    videoPlaceholder.classList.add('hidden');
+                } else {
+                    videoPlayer.classList.add('hidden');
+                    videoPlaceholder.classList.remove('hidden');
+                    videoPlaceholder.textContent = 'No video available for this scene';
+                }
+            }
+
+            updateBreadcrumb(path) {
+                const breadcrumb = document.getElementById('breadcrumb');
+                const [room, prompt, scene] = path;
+                breadcrumb.innerHTML = `
+                    <span class="breadcrumb-item">${room}</span> → 
+                    <span class="breadcrumb-item">${prompt}</span> → 
+                    <span class="breadcrumb-item">${scene}</span>
+                `;
+            }
+
+            updateSelectedTreeItem(path) {
+                document.querySelectorAll('.tree-item.selected').forEach(item => {
+                    item.classList.remove('selected');
+                });
+                
+                const [,, sceneNameFromPath] = path;
+                const treeItems = document.querySelectorAll('.tree-item.scene');
+                treeItems.forEach(item => {
+                    const text = item.textContent.trim();
+                    if (text.startsWith(sceneNameFromPath)) {
+                        item.classList.add('selected');
+                    }
+                });
+            }
+
+            setupControls() {
+                // Mouse controls for camera
+                this.renderer.domElement.addEventListener('mousedown', (event) => {
+                    this.mouseDown = true;
+                    this.previousMousePosition.set(event.clientX, event.clientY);
+                });
+
+                this.renderer.domElement.addEventListener('mouseup', () => {
+                    this.mouseDown = false;
+                });
+
+                this.renderer.domElement.addEventListener('mousemove', (event) => {
+                    if (!this.mouseDown) return;
+
+                    const deltaMove = new THREE.Vector2(
+                        event.clientX - this.previousMousePosition.x,
+                        event.clientY - this.previousMousePosition.y
+                    );
+
+                    const spherical = new THREE.Spherical();
+                    spherical.setFromVector3(this.camera.position);
+                    
+                    spherical.theta -= deltaMove.x * 0.01;
+                    spherical.phi += deltaMove.y * 0.01;
+                    spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+
+                    this.camera.position.setFromSpherical(spherical);
+                    this.camera.lookAt(0, 0, 0);
+
+                    this.previousMousePosition.set(event.clientX, event.clientY);
+                });
+
+                this.renderer.domElement.addEventListener('wheel', (event) => {
+                    event.preventDefault();
+                    const scale = event.deltaY > 0 ? 1.1 : 0.9;
+                    this.camera.position.multiplyScalar(scale);
+                });
+                
+                const resizer = document.getElementById('resizer');
+                const videoContainer = document.getElementById('video-container');
+                const mainContent = document.getElementById('main-content');
+
+                const onMouseDown = (e) => {
+                    e.preventDefault();
+                    let initialHeight = videoContainer.offsetHeight;
+                    let initialMouseY = e.clientY;
+
+                    const onMouseMove = (moveEvent) => {
+                        const deltaY = moveEvent.clientY - initialMouseY;
+                        let newHeight = initialHeight - deltaY;
+                        const maxHeight = mainContent.offsetHeight - 150;
+                        const minHeight = 50;
+                        if (newHeight < minHeight) newHeight = minHeight;
+                        if (newHeight > maxHeight) newHeight = maxHeight;
+                        videoContainer.style.height = `${newHeight}px`;
+                        this.updateCameraAspect();
+                    };
+
+                    const onMouseUp = () => {
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                };
+                resizer.addEventListener('mousedown', onMouseDown);
+
+                // UI Controls
+                document.getElementById('play-pause').addEventListener('click', () => this.togglePlayback());
+                document.getElementById('prev-frame').addEventListener('click', () => this.previousFrame());
+                document.getElementById('next-frame').addEventListener('click', () => this.nextFrame());
+                document.getElementById('reset-view').addEventListener('click', () => this.resetView());
+                
+                const timeline = document.getElementById('timeline');
+                timeline.addEventListener('click', (event) => {
+                    const rect = timeline.getBoundingClientRect();
+                    const progress = (event.clientX - rect.left) / rect.width;
+                    this.seekToFrame(Math.floor(progress * this.frames.length));
+                });
+
+                const pointSizeSlider = document.getElementById('point-size');
+                const pointSizeValue = document.getElementById('point-size-value');
+                pointSizeSlider.addEventListener('input', (event) => {
+                    const value = parseFloat(event.target.value);
+                    pointSizeValue.textContent = value.toFixed(2);
+                    this.updatePointSize(value);
+                });
+
+                document.getElementById('speed-control').addEventListener('input', (event) => {
+                    this.speed = parseFloat(event.target.value);
+                    this.updatePlaybackSpeed();
+                });
+
+                document.getElementById('use-label-colors').addEventListener('click', () => {
+                    this.useLabelColors = !this.useLabelColors;
+                    const button = document.getElementById('use-label-colors');
+                    button.classList.toggle('active', this.useLabelColors);
+                    button.innerHTML = this.useLabelColors ? '🎨 Label Colors' : '📸 Original Colors';
+                    if (this.frames.length > 0) {
+                        this.displayFrame(this.currentFrame);
+                    }
+                });
+
+                document.getElementById('folder-upload').addEventListener('change', async (event) => {
+                    await this.loadDataset(event.target.files);
+                });
+
+                document.addEventListener('keydown', (event) => {
+                    if (event.target.tagName === 'INPUT') return;
+                    switch(event.code) {
+                        case 'Space': event.preventDefault(); this.togglePlayback(); break;
+                        case 'ArrowLeft': event.preventDefault(); this.previousFrame(); break;
+                        case 'ArrowRight': event.preventDefault(); this.nextFrame(); break;
+                        case 'KeyR': event.preventDefault(); this.resetView(); break;
+                    }
+                });
+
+                window.addEventListener('resize', () => {
+                    this.updateCameraAspect();
+                });
+            }
+
+            async loadDataset(files) {
+                if (!files || files.length === 0) return;
+                
+                document.getElementById('loading').classList.remove('hidden');
+                
+                try {
+                    this.datasetStructure = await this.buildDatasetStructure(files);
+                    this.renderTree();
+                    document.getElementById('breadcrumb').innerHTML = '<span>Dataset loaded - select a scene</span>';
+                } catch (error) {
+                    console.error('Error loading dataset:', error);
+                    const breadcrumb = document.getElementById('breadcrumb');
+                    breadcrumb.innerHTML = '<span style="color: #ff4d4f;">Error loading dataset.</span>';
+                } finally {
+                    document.getElementById('loading').classList.add('hidden');
+                }
+            }
+            
+            async parseFile(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        try {
+                            const content = event.target.result;
+                            let frameData;
+                            
+                            if (file.name.toLowerCase().endsWith('.ply')) {
+                                frameData = this.parsePLY(content);
+                            } else if (file.name.toLowerCase().endsWith('.txt') || file.name.toLowerCase().endsWith('.xyz')) {
+                                frameData = this.parseXYZ(content);
+                            } else if (file.name.toLowerCase().endsWith('.pcd')) {
+                                frameData = this.parsePCD(content);
+                            } else {
+                                reject(new Error('Unsupported file format'));
+                                return;
+                            }
+                            
+                            resolve(frameData);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    reader.onerror = () => reject(new Error('Failed to read file'));
+                    reader.readAsText(file);
+                });
+            }
+            
+            parsePLY(content) {
+                const lines = content.split('\n');
+                let dataStartIndex = 0;
+                
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].trim() === 'end_header') {
+                        dataStartIndex = i + 1;
+                        break;
+                    }
+                }
+                
+                const positions = [];
+                const labels = [];
+                
+                for (let i = dataStartIndex; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+                    
+                    const parts = line.split(/\s+/);
+                    if (parts.length >= 3) {
+                        const x = parseFloat(parts[0]);
+                        const y = parseFloat(parts[1]);
+                        const z = parseFloat(parts[2]);
+                        
+                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                            positions.push(x, y, z);
+                            labels.push(parts.length > 3 ? parts[3] : 'default');
+                        }
+                    }
+                }
+                
+                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+            }
+            
+            parseXYZ(content) {
+                const lines = content.split('\n');
+                const positions = [];
+                const labels = [];
+                
+                for (const line of lines) {
+                    const parts = line.trim().split(/\s+/);
+                    if (parts.length >= 3) {
+                        const x = parseFloat(parts[0]);
+                        const y = parseFloat(parts[1]);
+                        const z = parseFloat(parts[2]);
+                        
+                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                            positions.push(x, y, z);
+                            labels.push(parts.length > 3 ? parts[3] : 'default');
+                        }
+                    }
+                }
+                
+                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+            }
+            
+            parsePCD(content) {
+                const lines = content.split('\n');
+                let dataStart = 0, pointCount = 0, dataFormat = 'ascii';
+                const fields = [];
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (line.startsWith('FIELDS')) fields.push(...line.split(' ').slice(1).map(n => n.toLowerCase()));
+                    else if (line.startsWith('POINTS')) pointCount = parseInt(line.split(' ')[1]);
+                    else if (line.startsWith('DATA')) {
+                        dataFormat = line.split(' ')[1].toLowerCase();
+                        dataStart = i + 1;
+                        break;
+                    }
+                }
+                
+                if (dataFormat !== 'ascii') throw new Error('Only ASCII PCD format is supported');
+                
+                const positions = [], labels = [];
+                const xIndex = fields.indexOf('x'), yIndex = fields.indexOf('y'), zIndex = fields.indexOf('z');
+                const labelIndex = fields.includes('label') ? fields.indexOf('label') : fields.indexOf('semantic');
+                
+                for (let i = dataStart; i < dataStart + pointCount && i < lines.length; i++) {
+                    const parts = lines[i].trim().split(/\s+/);
+                    if (parts.length >= 3) {
+                        const x = parseFloat(parts[xIndex]), y = parseFloat(parts[yIndex]), z = parseFloat(parts[zIndex]);
+                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                            positions.push(x, y, z);
+                            labels.push(labelIndex !== -1 && parts[labelIndex] ? parts[labelIndex] : 'default');
+                        }
+                    }
+                }
+                
+                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+            }
+
+            getColorForLabel(label) {
+                const labelLower = String(label).toLowerCase();
+                if (this.colorMap[label]) return this.colorMap[label];
+                if (this.colorMap[labelLower]) return this.colorMap[labelLower];
+                
+                for (const key in this.colorMap) {
+                    if (labelLower.includes(key.toLowerCase())) return this.colorMap[key];
+                }
+                return this.generateColorFromLabel(label);
+            }
+
+            generateColorFromLabel(label) {
+                let hash = 0;
+                const strLabel = String(label);
+                for (let i = 0; i < strLabel.length; i++) {
+                    const char = strLabel.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash = hash & hash;
+                }
+                return [(hash & 0xFF) / 255, ((hash >> 8) & 0xFF) / 255, ((hash >> 16) & 0xFF) / 255];
+            }
+            
+            displayFrame(frameIndex) {
+                if (frameIndex < 0 || frameIndex >= this.frames.length) return;
+                
+                const frameData = this.frames[frameIndex];
+                
+                if (this.points) {
+                    this.scene.remove(this.points);
+                    this.points.geometry.dispose();
+                    this.points.material.dispose();
+                }
+                
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(frameData.positions, 3));
+                
+                const finalColors = this.generateLabelColors(frameData.labels);
+                geometry.setAttribute('color', new THREE.BufferAttribute(finalColors, 3));
+                
+                const material = new THREE.PointsMaterial({
+                    size: parseFloat(document.getElementById('point-size').value),
+                    vertexColors: true,
+                    sizeAttenuation: true
+                });
+                
+                this.points = new THREE.Points(geometry, material);
+                this.scene.add(this.points);
+                
+                this.currentFrame = frameIndex;
+            }
+
+            generateLabelColors(labels) {
+                const colors = new Float32Array(labels.length * 3);
+                for (let i = 0; i < labels.length; i++) {
+                    const colorArr = this.getColorForLabel(labels[i]);
+                    colors[i * 3] = colorArr[0];
+                    colors[i * 3 + 1] = colorArr[1];
+                    colors[i * 3 + 2] = colorArr[2];
+                }
+                return colors;
+            }
+
+            updatePointSize(size) {
+                if (this.points && this.points.material) {
+                    this.points.material.size = size;
+                }
+            }
+
+            togglePlayback() {
+                if (this.frames.length === 0) return;
+                this.isPlaying = !this.isPlaying;
+                const playIcon = document.getElementById('play-icon');
+                const playText = document.getElementById('play-text');
+                if (this.isPlaying) {
+                    playIcon.textContent = '⏸️';
+                    playText.textContent = 'Pause';
+                    this.startPlayback();
+                } else {
+                    playIcon.textContent = '▶️';
+                    playText.textContent = 'Play';
+                    this.stopPlayback();
+                }
+            }
+
+            startPlayback() {
+                if (this.frameInterval) clearInterval(this.frameInterval);
+                const interval = (1000 / this.fps) / this.speed;
+                this.frameInterval = setInterval(() => {
+                    this.seekToFrame((this.currentFrame + 1) % this.frames.length);
+                }, interval);
+            }
+
+            stopPlayback() {
+                if (this.frameInterval) clearInterval(this.frameInterval);
+                this.frameInterval = null;
+            }
+
+            updatePlaybackSpeed() {
+                if (this.isPlaying) this.startPlayback();
+            }
+
+            nextFrame() {
+                if (this.frames.length === 0) return;
+                this.seekToFrame((this.currentFrame + 1) % this.frames.length);
+            }
+
+            previousFrame() {
+                if (this.frames.length === 0) return;
+                const newFrame = this.currentFrame === 0 ? this.frames.length - 1 : this.currentFrame - 1;
+                this.seekToFrame(newFrame);
+            }
+
+            seekToFrame(frameIndex) {
+                if (frameIndex < 0 || frameIndex >= this.frames.length) return;
+                this.currentFrame = frameIndex;
+                this.displayFrame(this.currentFrame);
+                this.updateUI();
+            }
+
+            resetView() {
+                this.camera.position.set(5, 5, 5);
+                this.camera.lookAt(0, 0, 0);
+            }
+
+            updateUI() {
+                if (this.currentScene) document.getElementById('scene-info').textContent = `${this.currentScene.scene}`;
+                document.getElementById('frame-info').textContent = `${this.currentFrame + 1} / ${this.frames.length}`;
+                if (this.frames[this.currentFrame]) document.getElementById('points-info').textContent = this.frames[this.currentFrame].pointCount.toLocaleString();
+                
+                if (this.frames.length > 0) {
+                    const progress = this.frames.length > 1 ? (this.currentFrame / (this.frames.length - 1)) * 100 : 0;
+                    document.getElementById('timeline-progress').style.width = `${progress}%`;
+                    document.getElementById('timeline-handle').style.left = `${progress}%`;
+                }
+                
+                const currentTime = this.frames.length > 0 ? (this.currentFrame / this.fps) : 0;
+                const totalTime = this.frames.length > 0 ? ((this.frames.length -1) / this.fps) : 0;
+                document.getElementById('current-time').textContent = this.formatTime(currentTime);
+                document.getElementById('total-time').textContent = this.formatTime(totalTime);
+            }
+
+            formatTime(seconds) {
+                const totalSecs = Math.floor(seconds);
+                const mins = Math.floor(totalSecs / 60);
+                const secs = totalSecs % 60;
+                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                
+                const now = performance.now();
+                if (this.lastTime) {
+                    const delta = now - this.lastTime;
+                    if (delta > 0) document.getElementById('fps-info').textContent = Math.round(1000 / delta);
+                }
+                this.lastTime = now;
+                
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            new HierarchicalPointCloudViewer();
+        });
+    </script>
+</body>
+</html>
+�
