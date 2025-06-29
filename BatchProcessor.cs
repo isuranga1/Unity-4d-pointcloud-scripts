@@ -16,7 +16,13 @@ using UnityEditor;
 /// Stage 2: An automated batch process to record videos, point clouds, and a final report.
 /// </summary>
 public class BatchProcessor : MonoBehaviour
-{
+{    // ... (other variables)
+
+    [Header("Reporting Settings")]
+    [Tooltip("The name of the root GameObject in the scene that contains the environment to be reported (e.g. 'Bedroom').")]
+    public string sceneRootObjectName = "Bedroom";
+    
+    // ... (rest of the variables)
     [Header("Component References")]
     public SMPLAnimationPlayer smplPlayer;
     public DynamicSurfaceSampler surfaceSampler;
@@ -34,6 +40,8 @@ public class BatchProcessor : MonoBehaviour
     [Tooltip("The name of the scene folder where final offsets and output will be saved.")]
     public string sceneFolderName = "scene1";
     [Tooltip("Should the application quit after the batch process is complete?")]
+
+
     public bool quitOnFinish = true;
 
     // --- Private State ---
@@ -290,90 +298,164 @@ public class BatchProcessor : MonoBehaviour
 #endif
         }
     }
-    
+
     // ===================================================================
     // =========== REPORTING =============================================
     // ===================================================================
+
+private JSONObject CreateReportHeader()
+{
+    JSONObject report = new JSONObject();
+    // Using an InvariantCulture format ensures consistency across different systems.
+    report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+    report["environmentName"] = environmentFolderName;
+    report["sceneName"] = sceneFolderName;
+
+    // ... (all other settings sections like batchSettings, smplSettings, etc. remain the same) ...
+    JSONObject batchSettings = new JSONObject();
+    batchSettings["animationsSubfolderPath"] = animationsSubfolderPath;
+    batchSettings["initialOffsetsConfigName"] = initialOffsetsConfigName;
+    batchSettings["quitOnFinish"] = quitOnFinish;
+    report["batchProcessorSettings"] = batchSettings;
     
-    private JSONObject CreateReportHeader()
+    JSONObject smplSettings = new JSONObject();
+    Transform smplTransform = smplPlayer.transform;
+    smplSettings["initialPosition"] = new JSONObject { ["x"] = smplTransform.position.x, ["y"] = smplTransform.position.y, ["z"] = smplTransform.position.z };
+    smplSettings["initialRotation"] = new JSONObject { ["x"] = smplTransform.rotation.x, ["y"] = smplTransform.rotation.y, ["z"] = smplTransform.rotation.z, ["w"] = smplTransform.rotation.w };
+    smplSettings["initialScale"] = new JSONObject { ["x"] = smplTransform.localScale.x, ["y"] = smplTransform.localScale.y, ["z"] = smplTransform.localScale.z };
+    smplSettings["loopAnimation"] = smplPlayer.loop;
+    smplSettings["yOffset"] = smplPlayer.yOffset;
+    smplSettings["playbackSpeed"] = smplPlayer.playbackSpeed;
+    report["smplPlayerSettings"] = smplSettings;
+    
+    JSONObject samplerSettings = new JSONObject();
+    samplerSettings["defaultPointsPerUnitArea"] = surfaceSampler.defaultPointsPerUnitArea;
+    samplerSettings["roomObjectKeyword"] = surfaceSampler.roomObjectKeyword;
+    samplerSettings["captureDuration"] = surfaceSampler.captureDuration;
+    samplerSettings["captureFPS"] = surfaceSampler.captureFPS;
+    samplerSettings["baseOutputDirectory"] = surfaceSampler.baseOutputDirectory;
+    samplerSettings["fixedRandomSeed"] = surfaceSampler.fixedRandomSeed;
+    report["surfaceSamplerSettings"] = samplerSettings;
+    
+    JSONObject recorderSettings = new JSONObject();
+    report["sceneRecorderSettings"] = recorderSettings;
+
+    if (mainCamera != null)
     {
-        JSONObject report = new JSONObject();
-        report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        report["environmentName"] = environmentFolderName;
-        report["sceneName"] = sceneFolderName;
-        
-        JSONObject batchSettings = new JSONObject();
-        batchSettings["animationsSubfolderPath"] = animationsSubfolderPath;
-        batchSettings["initialOffsetsConfigName"] = initialOffsetsConfigName;
-        batchSettings["quitOnFinish"] = quitOnFinish;
-        report["batchProcessorSettings"] = batchSettings;
-        
-        JSONObject smplSettings = new JSONObject();
-        Transform smplTransform = smplPlayer.transform;
-        smplSettings["initialPosition"] = new JSONObject { ["x"] = smplTransform.position.x, ["y"] = smplTransform.position.y, ["z"] = smplTransform.position.z };
-        smplSettings["initialRotation"] = new JSONObject { ["x"] = smplTransform.rotation.x, ["y"] = smplTransform.rotation.y, ["z"] = smplTransform.rotation.z, ["w"] = smplTransform.rotation.w };
-        smplSettings["initialScale"] = new JSONObject { ["x"] = smplTransform.localScale.x, ["y"] = smplTransform.localScale.y, ["z"] = smplTransform.localScale.z };
-        smplSettings["loopAnimation"] = smplPlayer.loop;
-        smplSettings["yOffset"] = smplPlayer.yOffset;
-        smplSettings["playbackSpeed"] = smplPlayer.playbackSpeed;
-        report["smplPlayerSettings"] = smplSettings;
-        
-        JSONObject samplerSettings = new JSONObject();
-        samplerSettings["defaultPointsPerUnitArea"] = surfaceSampler.defaultPointsPerUnitArea;
-        samplerSettings["roomObjectKeyword"] = surfaceSampler.roomObjectKeyword;
-        samplerSettings["captureDuration"] = surfaceSampler.captureDuration;
-        samplerSettings["captureFPS"] = surfaceSampler.captureFPS;
-        samplerSettings["baseOutputDirectory"] = surfaceSampler.baseOutputDirectory;
-        samplerSettings["fixedRandomSeed"] = surfaceSampler.fixedRandomSeed;
-        report["surfaceSamplerSettings"] = samplerSettings;
-        
-        JSONObject recorderSettings = new JSONObject();
-        report["sceneRecorderSettings"] = recorderSettings;
-
-        if (mainCamera != null)
-        {
-            JSONObject cameraSettings = new JSONObject();
-            Transform camTransform = mainCamera.transform;
-            cameraSettings["name"] = mainCamera.name;
-            cameraSettings["position"] = new JSONObject { ["x"] = camTransform.position.x, ["y"] = camTransform.position.y, ["z"] = camTransform.position.z };
-            cameraSettings["rotation"] = new JSONObject { ["x"] = camTransform.eulerAngles.x, ["y"] = camTransform.eulerAngles.y, ["z"] = camTransform.eulerAngles.z };
-            cameraSettings["fieldOfView"] = mainCamera.fieldOfView;
-            cameraSettings["nearClipPlane"] = mainCamera.nearClipPlane;
-            cameraSettings["farClipPlane"] = mainCamera.farClipPlane;
-            cameraSettings["projectionType"] = mainCamera.orthographic ? "Orthographic" : "Perspective";
-            report["cameraSettings"] = cameraSettings;
-        }
-
-#if UNITY_EDITOR
-        JSONArray sceneObjects = new JSONArray();
-        HashSet<GameObject> reportedRoots = new HashSet<GameObject>();
-        foreach (GameObject go in FindObjectsOfType<GameObject>())
-        {
-            Transform root = go.transform.root;
-            if (reportedRoots.Contains(root.gameObject)) continue;
-            reportedRoots.Add(root.gameObject);
-            if (root == smplPlayer.transform.root) continue;
-            if (root.GetComponentInChildren<Renderer>() == null) continue;
-            
-            JSONObject objectInfo = new JSONObject();
-            objectInfo["instanceName"] = root.name;
-            string prefabPath = "Not a prefab";
-            if (PrefabUtility.IsPartOfAnyPrefab(root.gameObject))
-            {
-                prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(root.gameObject);
-            }
-            objectInfo["assetPath"] = string.IsNullOrEmpty(prefabPath) ? "Not Found" : prefabPath;
-            Transform t = root.transform;
-            objectInfo["position"] = new JSONObject { ["x"] = t.position.x, ["y"] = t.position.y, ["z"] = t.position.z };
-            objectInfo["rotation"] = new JSONObject { ["x"] = t.eulerAngles.x, ["y"] = t.eulerAngles.y, ["z"] = t.eulerAngles.z };
-            objectInfo["scale"] = new JSONObject { ["x"] = t.localScale.x, ["y"] = t.localScale.y, ["z"] = t.localScale.z };
-            sceneObjects.Add(objectInfo);
-        }
-        report["sceneObjects"] = sceneObjects;
-#endif
-        return report;
+        JSONObject cameraSettings = new JSONObject();
+        Transform camTransform = mainCamera.transform;
+        cameraSettings["name"] = mainCamera.name;
+        cameraSettings["position"] = new JSONObject { ["x"] = camTransform.position.x, ["y"] = camTransform.position.y, ["z"] = camTransform.position.z };
+        cameraSettings["rotation"] = new JSONObject { ["x"] = camTransform.eulerAngles.x, ["y"] = camTransform.eulerAngles.y, ["z"] = camTransform.eulerAngles.z };
+        cameraSettings["fieldOfView"] = mainCamera.fieldOfView;
+        cameraSettings["nearClipPlane"] = mainCamera.nearClipPlane;
+        cameraSettings["farClipPlane"] = mainCamera.farClipPlane;
+        cameraSettings["projectionType"] = mainCamera.orthographic ? "Orthographic" : "Perspective";
+        report["cameraSettings"] = cameraSettings;
     }
 
+
+#if UNITY_EDITOR
+    JSONObject sceneObjectsReport = new JSONObject();
+    GameObject sceneRootObject = GameObject.Find(sceneRootObjectName);
+
+    if (sceneRootObject == null)
+    {
+        Debug.LogError($"Scene reporting failed: Could not find the root object named '{sceneRootObjectName}'.");
+    }
+    else if (!sceneRootObject.activeInHierarchy)
+    {
+        Debug.LogWarning($"Scene reporting skipped: The root object '{sceneRootObjectName}' is inactive.");
+    }
+    else
+    {
+        string[] categories = { "Room", "Furniture", "Objects" };
+        foreach (string categoryName in categories)
+        {
+            Transform categoryTransform = sceneRootObject.transform.Find(categoryName);
+            if (categoryTransform == null || !categoryTransform.gameObject.activeInHierarchy)
+            {
+                Debug.LogWarning($"In '{sceneRootObjectName}', could not find or inactive category object '{categoryName}'. Skipping.");
+                continue;
+            }
+
+            JSONArray childrenArray = new JSONArray();
+            foreach (Transform child in categoryTransform)
+            {
+                if (!child.gameObject.activeInHierarchy) continue;
+
+                JSONObject childInfo = new JSONObject();
+                childInfo["instanceName"] = child.name;
+                childInfo["position"] = new JSONObject { ["x"] = child.position.x, ["y"] = child.position.y, ["z"] = child.position.z };
+                childInfo["rotation"] = new JSONObject { ["x"] = child.eulerAngles.x, ["y"] = child.eulerAngles.y, ["z"] = child.eulerAngles.z };
+                childInfo["scale"] = new JSONObject { ["x"] = child.localScale.x, ["y"] = child.localScale.y, ["z"] = child.localScale.z };
+
+                if (PrefabUtility.IsPartOfAnyPrefab(child.gameObject))
+                {
+                    // This section for prefabs is correct and remains unchanged.
+                    childInfo["assetPath"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(child.gameObject);
+                    JSONArray overrides = new JSONArray();
+                    foreach (var added in PrefabUtility.GetAddedComponents(child.gameObject))
+                    {
+                        overrides.Add(new JSONObject { ["type"] = "Added Component", ["component"] = added.GetType().FullName });
+                    }
+                    PropertyModification[] modifications = PrefabUtility.GetPropertyModifications(child.gameObject);
+                    if (modifications != null)
+                    {
+                        foreach (var mod in modifications)
+                        {
+                            if (mod.target != null)
+                            {
+                                overrides.Add(new JSONObject { 
+                                    ["type"] = "Modified Property", 
+                                    ["component"] = mod.target.GetType().FullName,
+                                    ["property"] = mod.propertyPath,
+                                    ["value"] = mod.value
+                                });
+                            }
+                        }
+                    }
+                    if(overrides.Count > 0)
+                    {
+                        childInfo["overrides"] = overrides;
+                    }
+                }
+                else
+                {
+                    // --- CORRECTED LOGIC for Non-Prefab Objects ---
+                    JSONObject details = new JSONObject();
+                    details["status"] = "Not a Prefab";
+
+                    MeshFilter mf = child.GetComponent<MeshFilter>();
+                    
+                    if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Built-in"))
+                    {
+                        // CASE 1: It has a MeshFilter with a built-in mesh (Cube, Sphere, etc.)
+                        details["reason"] = "Primitive Shape";
+                        details["shape"] = mf.sharedMesh.name.Replace("Built-in\\/", "");
+                    }
+                    else if (child.GetComponents<Component>().Length == 1 && child.childCount > 0)
+                    {
+                        // CASE 2: It has ONLY a Transform component, but has children. It's a folder.
+                        details["reason"] = "Organizational Object";
+                    }
+                    else
+                    {
+                        // CASE 3: Anything else. An object with a mesh that isn't a primitive, or one
+                        // with other components like colliders, lights, or scripts.
+                        details["reason"] = "Generic GameObject";
+                    }
+                    childInfo["assetPath"] = details;
+                }
+                childrenArray.Add(childInfo);
+            }
+            sceneObjectsReport[categoryName] = childrenArray;
+        }
+    }
+    report["sceneObjects"] = sceneObjectsReport;
+#endif
+    return report;
+}
     private void SaveSummaryReport(JSONNode report)
     {
         try
