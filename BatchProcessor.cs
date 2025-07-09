@@ -16,32 +16,32 @@ using UnityEditor;
 /// Stage 2: An automated batch process to record videos, point clouds, and a final report.
 /// </summary>
 public class BatchProcessor : MonoBehaviour
-{    // ... (other variables)
-
+{
     [Header("Reporting Settings")]
     [Tooltip("The name of the root GameObject in the scene that contains the environment to be reported (e.g. 'Bedroom').")]
     public string sceneRootObjectName = "Bedroom";
-    
-    // ... (rest of the variables)
+
     [Header("Component References")]
     public SMPLAnimationPlayer smplPlayer;
     public DynamicSurfaceSampler surfaceSampler;
     public SceneRecorder sceneRecorder;
-    [Tooltip("The main camera of the scene. If not assigned, it will try to find Camera.main.")]
-    public Camera mainCamera;
+    [Tooltip("A list of cameras to use for recording. The active camera can be switched in the UI.")]
+    public List<Camera> cameras = new List<Camera>();
 
     [Header("Batch Settings")]
     [Tooltip("Path to the folder of JSON animations, relative to the StreamingAssets folder.")]
     public string animationsSubfolderPath = "Animations";
     [Tooltip("The name of the JSON file in StreamingAssets for reading initial/default offsets.")]
     public string initialOffsetsConfigName = "animation_offsets.json";
+    [Tooltip("The name of the JSON file for reading/writing the list of excluded animations.")]
+    public string excludedAnimationsConfigName = "excluded_animations.json";
     [Tooltip("Name of the environment folder inside the base output directory (e.g., 'bedroom').")]
     public string environmentFolderName = "bedroom";
     [Tooltip("The name of the scene folder where final offsets and output will be saved.")]
     public string sceneFolderName = "scene1";
+    [Tooltip("Name of the folder for miscellaneous data like the exclusion list (e.g., 'OtherData').")]
+    public string otherDataFolderName = "OtherData";
     [Tooltip("Should the application quit after the batch process is complete?")]
-
-
     public bool quitOnFinish = true;
 
     // --- Private State ---
@@ -53,10 +53,10 @@ public class BatchProcessor : MonoBehaviour
     private Dictionary<string, float> tunedRotations = new Dictionary<string, float>();
     private Dictionary<string, bool> includedAnimations = new Dictionary<string, bool>();
     private int currentAnimationIndex = -1;
-    // *** MODIFIED ***: liveOffset is now a Vector3 to handle X, Y, and Z.
     private Vector3 liveOffset;
     private float liveRotationY;
     private bool isDirty = false;
+    private int activeCameraIndex = 0;
 
     void Start()
     {
@@ -65,16 +65,26 @@ public class BatchProcessor : MonoBehaviour
             Debug.LogError("BatchProcessor Error: SMPLPlayer, SurfaceSampler, or SceneRecorder is not assigned!");
             return;
         }
-        if (mainCamera == null)
+        
+        if (cameras.Count == 0)
         {
-            mainCamera = Camera.main;
-            if (mainCamera == null)
+            Debug.Log("No cameras assigned in the Inspector. Attempting to find Camera.main.");
+            Camera mainCamera = Camera.main;
+            if (mainCamera != null)
             {
-                Debug.LogError("Main Camera is not assigned and could not be found with Camera.main tag!");
+                cameras.Add(mainCamera);
+            }
+            else
+            {
+                Debug.LogError("No cameras assigned and could not find a camera tagged 'MainCamera'!");
             }
         }
-        LoadInitialOffsets();
+
+        SetActiveCamera(activeCameraIndex);
+
         PopulateAnimationList();
+        LoadInitialOffsets();
+        LoadExcludedAnimations();
         LoadAnimationForTuning(0);
     }
 
@@ -82,27 +92,119 @@ public class BatchProcessor : MonoBehaviour
     // =========== STAGE 1: INTERACTIVE TUNING ===========================
     // ===================================================================
 
+    private void SwitchToNextCamera()
+    {
+        if (cameras.Count <= 1) return;
+
+        activeCameraIndex = (activeCameraIndex + 1) % cameras.Count;
+        SetActiveCamera(activeCameraIndex);
+        Debug.Log($"Switched to camera: {cameras[activeCameraIndex].name}");
+    }
+
+    private void SetActiveCamera(int index)
+    {
+        if (cameras.Count == 0 || index < 0 || index >= cameras.Count) return;
+
+        for (int i = 0; i < cameras.Count; i++)
+        {
+            if (cameras[i] != null)
+            {
+                cameras[i].gameObject.SetActive(i == index);
+            }
+        }
+        activeCameraIndex = index;
+    }
+
     private void LoadInitialOffsets()
     {
-        string configPath = Path.Combine(Application.streamingAssetsPath, initialOffsetsConfigName);
+        string masterConfigPath = Path.Combine(Application.streamingAssetsPath, initialOffsetsConfigName);
+        if (File.Exists(masterConfigPath))
+        {
+            try
+            {
+                string jsonText = File.ReadAllText(masterConfigPath);
+                var json = JSON.Parse(jsonText);
+                foreach (KeyValuePair<string, JSONNode> animConfig in json)
+                {
+                    float y = animConfig.Value["y"] != null ? (float)animConfig.Value["y"] : 0f;
+                    tunedOffsets[animConfig.Key] = new Vector3(animConfig.Value["x"], y, animConfig.Value["z"]);
+                    tunedRotations[animConfig.Key] = animConfig.Value["y_rotation"];
+                }
+                Debug.Log($"Successfully loaded {tunedOffsets.Count} initial offsets from master config '{initialOffsetsConfigName}'.");
+            }
+            catch (Exception e) { Debug.LogError($"Error parsing {initialOffsetsConfigName}: {e.Message}"); }
+        }
+        else { Debug.LogWarning($"Master offsets file not found at {masterConfigPath}. This is optional."); }
+
+        Debug.Log("Checking for individually tuned offsets in the output directory...");
+        int overrideCount = 0;
+        foreach (string filePath in animationFiles)
+        {
+            string animFileName = Path.GetFileNameWithoutExtension(filePath);
+            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
+
+            if (File.Exists(offsetFilePath))
+            {
+                try
+                {
+                    string jsonText = File.ReadAllText(offsetFilePath);
+                    var offsetJson = JSON.Parse(jsonText);
+                    if (offsetJson[animFileName] != null)
+                    {
+                        var animConfig = offsetJson[animFileName];
+                        float y = animConfig["y"] != null ? (float)animConfig["y"] : 0f;
+                        tunedOffsets[animFileName] = new Vector3(animConfig["x"], y, animConfig["z"]);
+                        tunedRotations[animFileName] = animConfig["y_rotation"];
+                        overrideCount++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"Could not parse individual offset file for '{animFileName}': {e.Message}");
+                }
+            }
+        }
+        if (overrideCount > 0)
+        {
+            Debug.Log($"Loaded and applied {overrideCount} individually tuned offsets, overriding defaults.");
+        }
+    }
+    
+    private void LoadExcludedAnimations()
+    {
+        string configPath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, otherDataFolderName, sceneFolderName, excludedAnimationsConfigName);
         if (File.Exists(configPath))
         {
             try
             {
                 string jsonText = File.ReadAllText(configPath);
                 var json = JSON.Parse(jsonText);
-                foreach (KeyValuePair<string, JSONNode> animConfig in json)
+                JSONArray excludedArray = json["excluded_animations"].AsArray;
+
+                if (excludedArray != null)
                 {
-                    // *** MODIFIED ***: Load Y offset from config, default to 0 if it doesn't exist.
-                    float y = animConfig.Value["y"] != null ? (float)animConfig.Value["y"] : 0f;
-                    tunedOffsets[animConfig.Key] = new Vector3(animConfig.Value["x"], y, animConfig.Value["z"]);
-                    tunedRotations[animConfig.Key] = animConfig.Value["y_rotation"];
+                    int loadCount = 0;
+                    foreach (JSONNode animNameNode in excludedArray)
+                    {
+                        string animFileName = animNameNode.Value;
+                        if (includedAnimations.ContainsKey(animFileName))
+                        {
+                            includedAnimations[animFileName] = false;
+                            loadCount++;
+                        }
+                    }
+                    Debug.Log($"Successfully loaded and applied {loadCount} exclusions from {configPath}.");
                 }
-                Debug.Log($"Successfully loaded {tunedOffsets.Count} initial offsets from {initialOffsetsConfigName}.");
             }
-            catch (Exception e) { Debug.LogError($"Error parsing {initialOffsetsConfigName}: {e.Message}"); }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error parsing {excludedAnimationsConfigName}: {e.Message}");
+            }
         }
-        else { Debug.LogWarning($"Initial offsets file not found at {configPath}. All animations will start with a (0,0,0) offset/rotation."); }
+        else
+        {
+            Debug.LogWarning($"Excluded animations file not found at {configPath}. All animations will be included by default.");
+        }
     }
 
     private void PopulateAnimationList()
@@ -130,7 +232,6 @@ public class BatchProcessor : MonoBehaviour
         Vector3 offsetToLoad = tunedOffsets.ContainsKey(animFileName) ? tunedOffsets[animFileName] : Vector3.zero;
         float rotationToLoad = tunedRotations.ContainsKey(animFileName) ? tunedRotations[animFileName] : 0f;
         
-        // *** MODIFIED ***: Directly assign the loaded Vector3 offset.
         liveOffset = offsetToLoad;
         liveRotationY = rotationToLoad;
         smplPlayer.LoadAndPlayAnimation(filePath, offsetToLoad, rotationToLoad);
@@ -140,64 +241,147 @@ public class BatchProcessor : MonoBehaviour
     private void SaveCurrentOffset()
     {
         if (currentAnimationIndex < 0) return;
+
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
+
+        Vector3 offset = liveOffset;
+        float rotation = liveRotationY;
+
+        tunedOffsets[animFileName] = offset;
+        tunedRotations[animFileName] = rotation;
+
         string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName);
         string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
         Directory.CreateDirectory(outputDirectory);
+
         JSONNode rootNode = new JSONObject();
-        
-        // *** MODIFIED ***: Save X, Y, Z position and Y rotation.
-        JSONObject offsetNode = new JSONObject { ["x"] = liveOffset.x, ["y"] = liveOffset.y, ["z"] = liveOffset.z, ["y_rotation"] = liveRotationY };
+        JSONObject offsetNode = new JSONObject { ["x"] = offset.x, ["y"] = offset.y, ["z"] = offset.z, ["y_rotation"] = rotation };
         rootNode[animFileName] = offsetNode;
+
         File.WriteAllText(savePath, rootNode.ToString(4));
-        Debug.Log($"Saved offset and rotation for '{animFileName}' to: {savePath}");
-        isDirty = false;
+        Debug.Log($"Saved current offset for '{animFileName}' to: {savePath}");
+    }
+
+    private void SaveAllModifiedOffsets()
+    {
+        if (tunedOffsets.Count == 0)
+        {
+            Debug.Log("No offset changes to save.");
+            return;
+        }
+
+        Debug.Log($"Saving offsets for {tunedOffsets.Count} modified animations...");
+
+        foreach (var animFileName in tunedOffsets.Keys)
+        {
+            if (tunedRotations.ContainsKey(animFileName))
+            {
+                Vector3 offset = tunedOffsets[animFileName];
+                float rotation = tunedRotations[animFileName];
+
+                string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName);
+                string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
+                Directory.CreateDirectory(outputDirectory);
+
+                JSONNode rootNode = new JSONObject();
+                JSONObject offsetNode = new JSONObject { ["x"] = offset.x, ["y"] = offset.y, ["z"] = offset.z, ["y_rotation"] = rotation };
+                rootNode[animFileName] = offsetNode;
+
+                File.WriteAllText(savePath, rootNode.ToString(4));
+                Debug.Log($"Saved offset and rotation for '{animFileName}' to: {savePath}");
+            }
+        }
+    }
+
+    private void SaveExcludedAnimationsConfig()
+    {
+        string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, otherDataFolderName, sceneFolderName);
+        string savePath = Path.Combine(outputDirectory, excludedAnimationsConfigName);
+        try
+        {
+            Directory.CreateDirectory(outputDirectory);
+
+            JSONObject rootNode = new JSONObject();
+            JSONArray excludedArray = new JSONArray();
+
+            foreach (var pair in includedAnimations)
+            {
+                if (!pair.Value)
+                {
+                    excludedArray.Add(pair.Key);
+                }
+            }
+
+            rootNode["excluded_animations"] = excludedArray;
+            File.WriteAllText(savePath, rootNode.ToString(4));
+            Debug.Log($"Saved excluded animations list to: {savePath}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Failed to save excluded animations config: {e.Message}");
+        }
     }
 
     void OnGUI()
     {
         if (currentState != EditorState.Tuning || animationFiles.Count == 0) return;
         
-        GUI.Box(new Rect(10, 10, 300, 310), "Animation Tuner & Batcher");
+        GUI.Box(new Rect(10, 10, 330, 350), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
         
         bool isIncluded = includedAnimations[animFileName];
-        isIncluded = GUI.Toggle(new Rect(20, 40, 280, 20), isIncluded, $" Process Animation: {animFileName}");
-        includedAnimations[animFileName] = isIncluded;
+        includedAnimations[animFileName] = GUI.Toggle(new Rect(20, 40, 300, 20), isIncluded, $" Process Animation: {animFileName}");
 
         GUI.Label(new Rect(20, 70, 40, 20), $"X: {liveOffset.x:F2}");
-        liveOffset.x = GUI.HorizontalSlider(new Rect(70, 75, 230, 20), liveOffset.x, -10f, 10f);
+        liveOffset.x = GUI.HorizontalSlider(new Rect(70, 75, 260, 20), liveOffset.x, -10f, 10f);
         
-        // *** NEW ***: UI slider for the Y-axis offset.
         GUI.Label(new Rect(20, 100, 40, 20), $"Y: {liveOffset.y:F2}");
-        liveOffset.y = GUI.HorizontalSlider(new Rect(70, 105, 230, 20), liveOffset.y, -5f, 5f);
+        liveOffset.y = GUI.HorizontalSlider(new Rect(70, 105, 260, 20), liveOffset.y, -5f, 5f);
         
         GUI.Label(new Rect(20, 130, 40, 20), $"Z: {liveOffset.z:F2}");
-        liveOffset.z = GUI.HorizontalSlider(new Rect(70, 135, 230, 20), liveOffset.z, -10f, 10f);
+        liveOffset.z = GUI.HorizontalSlider(new Rect(70, 135, 260, 20), liveOffset.z, -10f, 10f);
         
         GUI.Label(new Rect(20, 160, 80, 20), $"Rot Y: {liveRotationY:F1}");
-        liveRotationY = GUI.HorizontalSlider(new Rect(90, 165, 210, 20), liveRotationY, -180f, 180f);
+        liveRotationY = GUI.HorizontalSlider(new Rect(90, 165, 240, 20), liveRotationY, -180f, 180f);
 
         if (GUI.changed)
         {
-            tunedOffsets[animFileName] = liveOffset; // Store full Vector3
+            tunedOffsets[animFileName] = liveOffset;
             tunedRotations[animFileName] = liveRotationY;
-            smplPlayer.UpdateLiveOffset(liveOffset); // Pass full Vector3
+            smplPlayer.UpdateLiveOffset(liveOffset);
             smplPlayer.UpdateLiveRotation(liveRotationY);
             isDirty = true;
         }
 
-        if (GUI.Button(new Rect(20, 195, 80, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
-        if (GUI.Button(new Rect(110, 195, 80, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
+        if (GUI.Button(new Rect(20, 195, 70, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
+        if (GUI.Button(new Rect(95, 195, 70, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
+        
+        if (GUI.Button(new Rect(170, 195, 95, 20), "Save Current"))
+        {
+            SaveCurrentOffset();
+        }
+
         GUI.color = isDirty ? Color.green : Color.white;
-        if (GUI.Button(new Rect(200, 195, 100, 20), "Save All")) SaveCurrentOffset();
+        if (GUI.Button(new Rect(270, 195, 60, 20), "Save All"))
+        {
+            SaveAllModifiedOffsets();
+            SaveExcludedAnimationsConfig();
+            isDirty = false;
+        }
         GUI.color = Color.white;
         
+        string cameraName = (cameras.Count > 0 && cameras[activeCameraIndex] != null) ? cameras[activeCameraIndex].name : "None";
+        GUI.Label(new Rect(20, 225, 200, 20), $"Active Camera: {cameraName}");
+        if (GUI.Button(new Rect(240, 225, 80, 20), "Next Cam"))
+        {
+            SwitchToNextCamera();
+        }
+
         int includedCount = includedAnimations.Values.Count(b => b);
-        GUI.Label(new Rect(20, 225, 280, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
+        GUI.Label(new Rect(20, 255, 300, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
 
         GUI.backgroundColor = new Color(0.8f, 1f, 0.8f);
-        if (GUI.Button(new Rect(20, 255, 280, 40), $"Start Batch Process ({includedCount} items)"))
+        if (GUI.Button(new Rect(20, 285, 300, 40), $"Start Batch Process ({includedCount} items)"))
         {
             currentState = EditorState.BatchProcessing;
             StartCoroutine(RunAutomatedBatch());
@@ -222,16 +406,16 @@ public class BatchProcessor : MonoBehaviour
             if (!includedAnimations.ContainsKey(animFileName) || !includedAnimations[animFileName])
             {
                 Debug.Log($"--- Skipping '{animFileName}' as it is excluded from the batch process. ---");
-                continue; 
+                continue;
             }
-            
+
             Debug.Log($"--- Starting batch recording for: {animFileName} ---");
-            
+
             Vector3 finalOffset = Vector3.zero;
             float finalRotation = 0f;
             string description = "No description found.";
             string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
-            
+
             try
             {
                 var animJson = JSON.Parse(File.ReadAllText(filePath));
@@ -243,7 +427,6 @@ public class BatchProcessor : MonoBehaviour
                     if (offsetJson[animFileName] != null)
                     {
                         finalOffset.x = offsetJson[animFileName]["x"];
-                        // *** MODIFIED ***: Load Y offset.
                         finalOffset.y = offsetJson[animFileName]["y"] != null ? (float)offsetJson[animFileName]["y"] : 0f;
                         finalOffset.z = offsetJson[animFileName]["z"];
                         finalRotation = offsetJson[animFileName]["y_rotation"];
@@ -253,10 +436,9 @@ public class BatchProcessor : MonoBehaviour
                 else { Debug.LogWarning($"No tuned offset file found for '{animFileName}'. Using default offset/rotation."); }
             }
             catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
-            
+
             JSONObject animSummaryReport = new JSONObject();
             animSummaryReport["animationName"] = animFileName;
-            // *** MODIFIED ***: Report full Vector3 offset.
             animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
             animSummaryReport["tunedRotationY"] = finalRotation;
             processedAnimationsReport.Add(animSummaryReport);
@@ -274,11 +456,12 @@ public class BatchProcessor : MonoBehaviour
             string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
             sceneRecorder.BeginRecording(videoFilePath);
             smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
-            
+
             yield return null;
             yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath));
             sceneRecorder.EndRecording();
             Debug.Log($"--- Finished batch recording for: {animFileName} ---");
+            Debug.Log($"--- Saved the pointclouds in  {finalOutputDirectory} ---");
         }
         
         JSONArray excludedAnimationsReport = new JSONArray();
@@ -303,159 +486,181 @@ public class BatchProcessor : MonoBehaviour
     // =========== REPORTING =============================================
     // ===================================================================
 
-private JSONObject CreateReportHeader()
-{
-    JSONObject report = new JSONObject();
-    // Using an InvariantCulture format ensures consistency across different systems.
-    report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
-    report["environmentName"] = environmentFolderName;
-    report["sceneName"] = sceneFolderName;
-
-    // ... (all other settings sections like batchSettings, smplSettings, etc. remain the same) ...
-    JSONObject batchSettings = new JSONObject();
-    batchSettings["animationsSubfolderPath"] = animationsSubfolderPath;
-    batchSettings["initialOffsetsConfigName"] = initialOffsetsConfigName;
-    batchSettings["quitOnFinish"] = quitOnFinish;
-    report["batchProcessorSettings"] = batchSettings;
-    
-    JSONObject smplSettings = new JSONObject();
-    Transform smplTransform = smplPlayer.transform;
-    smplSettings["initialPosition"] = new JSONObject { ["x"] = smplTransform.position.x, ["y"] = smplTransform.position.y, ["z"] = smplTransform.position.z };
-    smplSettings["initialRotation"] = new JSONObject { ["x"] = smplTransform.rotation.x, ["y"] = smplTransform.rotation.y, ["z"] = smplTransform.rotation.z, ["w"] = smplTransform.rotation.w };
-    smplSettings["initialScale"] = new JSONObject { ["x"] = smplTransform.localScale.x, ["y"] = smplTransform.localScale.y, ["z"] = smplTransform.localScale.z };
-    smplSettings["loopAnimation"] = smplPlayer.loop;
-    smplSettings["yOffset"] = smplPlayer.yOffset;
-    smplSettings["playbackSpeed"] = smplPlayer.playbackSpeed;
-    report["smplPlayerSettings"] = smplSettings;
-    
-    JSONObject samplerSettings = new JSONObject();
-    samplerSettings["defaultPointsPerUnitArea"] = surfaceSampler.defaultPointsPerUnitArea;
-    samplerSettings["roomObjectKeyword"] = surfaceSampler.roomObjectKeyword;
-    samplerSettings["captureDuration"] = surfaceSampler.captureDuration;
-    samplerSettings["captureFPS"] = surfaceSampler.captureFPS;
-    samplerSettings["baseOutputDirectory"] = surfaceSampler.baseOutputDirectory;
-    samplerSettings["fixedRandomSeed"] = surfaceSampler.fixedRandomSeed;
-    report["surfaceSamplerSettings"] = samplerSettings;
-    
-    JSONObject recorderSettings = new JSONObject();
-    report["sceneRecorderSettings"] = recorderSettings;
-
-    if (mainCamera != null)
+    private JSONObject CreateReportHeader()
     {
-        JSONObject cameraSettings = new JSONObject();
-        Transform camTransform = mainCamera.transform;
-        cameraSettings["name"] = mainCamera.name;
-        cameraSettings["position"] = new JSONObject { ["x"] = camTransform.position.x, ["y"] = camTransform.position.y, ["z"] = camTransform.position.z };
-        cameraSettings["rotation"] = new JSONObject { ["x"] = camTransform.eulerAngles.x, ["y"] = camTransform.eulerAngles.y, ["z"] = camTransform.eulerAngles.z };
-        cameraSettings["fieldOfView"] = mainCamera.fieldOfView;
-        cameraSettings["nearClipPlane"] = mainCamera.nearClipPlane;
-        cameraSettings["farClipPlane"] = mainCamera.farClipPlane;
-        cameraSettings["projectionType"] = mainCamera.orthographic ? "Orthographic" : "Perspective";
-        report["cameraSettings"] = cameraSettings;
-    }
+        JSONObject report = new JSONObject();
+        report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        report["environmentName"] = environmentFolderName;
+        report["sceneName"] = sceneFolderName;
 
+        JSONObject batchSettings = new JSONObject();
+        batchSettings["animationsSubfolderPath"] = animationsSubfolderPath;
+        batchSettings["initialOffsetsConfigName"] = initialOffsetsConfigName;
+        batchSettings["quitOnFinish"] = quitOnFinish;
+        report["batchProcessorSettings"] = batchSettings;
+        
+        JSONObject smplSettings = new JSONObject();
+        Transform smplTransform = smplPlayer.transform;
+        smplSettings["initialPosition"] = new JSONObject { ["x"] = smplTransform.position.x, ["y"] = smplTransform.position.y, ["z"] = smplTransform.position.z };
+        smplSettings["initialRotation"] = new JSONObject { ["x"] = smplTransform.rotation.x, ["y"] = smplTransform.rotation.y, ["z"] = smplTransform.rotation.z, ["w"] = smplTransform.rotation.w };
+        smplSettings["initialScale"] = new JSONObject { ["x"] = smplTransform.localScale.x, ["y"] = smplTransform.localScale.y, ["z"] = smplTransform.localScale.z };
+        smplSettings["loopAnimation"] = smplPlayer.loop;
+        smplSettings["yOffset"] = smplPlayer.yOffset;
+        smplSettings["playbackSpeed"] = smplPlayer.playbackSpeed;
+        report["smplPlayerSettings"] = smplSettings;
+        
+        JSONObject samplerSettings = new JSONObject();
+        samplerSettings["defaultPointsPerUnitArea"] = surfaceSampler.defaultPointsPerUnitArea;
+        samplerSettings["roomObjectKeyword"] = surfaceSampler.roomObjectKeyword;
+        samplerSettings["captureDuration"] = surfaceSampler.captureDuration;
+        samplerSettings["captureFPS"] = surfaceSampler.captureFPS;
+        samplerSettings["baseOutputDirectory"] = surfaceSampler.baseOutputDirectory;
+        samplerSettings["fixedRandomSeed"] = surfaceSampler.fixedRandomSeed;
+        report["surfaceSamplerSettings"] = samplerSettings;
+        
+        JSONObject recorderSettings = new JSONObject();
+        report["sceneRecorderSettings"] = recorderSettings;
+
+        if (cameras.Count > 0 && cameras[activeCameraIndex] != null)
+        {
+            Camera activeCamera = cameras[activeCameraIndex];
+            JSONObject cameraSettings = new JSONObject();
+            Transform camTransform = activeCamera.transform;
+            cameraSettings["name"] = activeCamera.name;
+            cameraSettings["position"] = new JSONObject { ["x"] = camTransform.position.x, ["y"] = camTransform.position.y, ["z"] = camTransform.position.z };
+            cameraSettings["rotation"] = new JSONObject { ["x"] = camTransform.eulerAngles.x, ["y"] = camTransform.eulerAngles.y, ["z"] = camTransform.eulerAngles.z };
+            cameraSettings["fieldOfView"] = activeCamera.fieldOfView;
+            cameraSettings["nearClipPlane"] = activeCamera.nearClipPlane;
+            cameraSettings["farClipPlane"] = activeCamera.farClipPlane;
+            cameraSettings["projectionType"] = activeCamera.orthographic ? "Orthographic" : "Perspective";
+            report["cameraSettings"] = cameraSettings;
+        }
 
 #if UNITY_EDITOR
-    JSONObject sceneObjectsReport = new JSONObject();
-    GameObject sceneRootObject = GameObject.Find(sceneRootObjectName);
-
-    if (sceneRootObject == null)
-    {
-        Debug.LogError($"Scene reporting failed: Could not find the root object named '{sceneRootObjectName}'.");
-    }
-    else if (!sceneRootObject.activeInHierarchy)
-    {
-        Debug.LogWarning($"Scene reporting skipped: The root object '{sceneRootObjectName}' is inactive.");
-    }
-    else
-    {
-        string[] categories = { "Room", "Furniture", "Objects" };
-        foreach (string categoryName in categories)
+        JSONObject packagesReport = new JSONObject();
+        string manifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Packages", "manifest.json");
+        if (File.Exists(manifestPath))
         {
-            Transform categoryTransform = sceneRootObject.transform.Find(categoryName);
-            if (categoryTransform == null || !categoryTransform.gameObject.activeInHierarchy)
+            try
             {
-                Debug.LogWarning($"In '{sceneRootObjectName}', could not find or inactive category object '{categoryName}'. Skipping.");
-                continue;
-            }
-
-            JSONArray childrenArray = new JSONArray();
-            foreach (Transform child in categoryTransform)
-            {
-                if (!child.gameObject.activeInHierarchy) continue;
-
-                JSONObject childInfo = new JSONObject();
-                childInfo["instanceName"] = child.name;
-                childInfo["position"] = new JSONObject { ["x"] = child.position.x, ["y"] = child.position.y, ["z"] = child.position.z };
-                childInfo["rotation"] = new JSONObject { ["x"] = child.eulerAngles.x, ["y"] = child.eulerAngles.y, ["z"] = child.eulerAngles.z };
-                childInfo["scale"] = new JSONObject { ["x"] = child.localScale.x, ["y"] = child.localScale.y, ["z"] = child.localScale.z };
-
-                if (PrefabUtility.IsPartOfAnyPrefab(child.gameObject))
+                string manifestText = File.ReadAllText(manifestPath);
+                var manifestJson = JSON.Parse(manifestText);
+                var dependencies = manifestJson["dependencies"].AsObject;
+                if (dependencies != null)
                 {
-                    // This section for prefabs is correct and remains unchanged.
-                    childInfo["assetPath"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(child.gameObject);
-                    JSONArray overrides = new JSONArray();
-                    foreach (var added in PrefabUtility.GetAddedComponents(child.gameObject))
+                    foreach(KeyValuePair<string, JSONNode> dependency in dependencies)
                     {
-                        overrides.Add(new JSONObject { ["type"] = "Added Component", ["component"] = added.GetType().FullName });
-                    }
-                    PropertyModification[] modifications = PrefabUtility.GetPropertyModifications(child.gameObject);
-                    if (modifications != null)
-                    {
-                        foreach (var mod in modifications)
-                        {
-                            if (mod.target != null)
-                            {
-                                overrides.Add(new JSONObject { 
-                                    ["type"] = "Modified Property", 
-                                    ["component"] = mod.target.GetType().FullName,
-                                    ["property"] = mod.propertyPath,
-                                    ["value"] = mod.value
-                                });
-                            }
-                        }
-                    }
-                    if(overrides.Count > 0)
-                    {
-                        childInfo["overrides"] = overrides;
+                        packagesReport[dependency.Key] = dependency.Value;
                     }
                 }
-                else
-                {
-                    // --- CORRECTED LOGIC for Non-Prefab Objects ---
-                    JSONObject details = new JSONObject();
-                    details["status"] = "Not a Prefab";
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Failed to read or parse package manifest: {e.Message}");
+                packagesReport["error"] = "Failed to read package manifest.";
+            }
+        }
+        else
+        {
+            packagesReport["error"] = "Packages/manifest.json not found.";
+        }
+        report["installedPackages"] = packagesReport;
 
-                    MeshFilter mf = child.GetComponent<MeshFilter>();
-                    
-                    if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Built-in"))
+        JSONObject sceneObjectsReport = new JSONObject();
+        GameObject sceneRootObject = GameObject.Find(sceneRootObjectName);
+
+        if (sceneRootObject == null)
+        {
+            Debug.LogError($"Scene reporting failed: Could not find the root object named '{sceneRootObjectName}'.");
+        }
+        else if (!sceneRootObject.activeInHierarchy)
+        {
+            Debug.LogWarning($"Scene reporting skipped: The root object '{sceneRootObjectName}' is inactive.");
+        }
+        else
+        {
+            string[] categories = { "Room", "Furniture", "Objects" };
+            foreach (string categoryName in categories)
+            {
+                Transform categoryTransform = sceneRootObject.transform.Find(categoryName);
+                if (categoryTransform == null || !categoryTransform.gameObject.activeInHierarchy)
+                {
+                    Debug.LogWarning($"In '{sceneRootObjectName}', could not find or inactive category object '{categoryName}'. Skipping.");
+                    continue;
+                }
+
+                JSONArray childrenArray = new JSONArray();
+                foreach (Transform child in categoryTransform)
+                {
+                    if (!child.gameObject.activeInHierarchy) continue;
+
+                    JSONObject childInfo = new JSONObject();
+                    childInfo["instanceName"] = child.name;
+                    childInfo["position"] = new JSONObject { ["x"] = child.position.x, ["y"] = child.position.y, ["z"] = child.position.z };
+                    childInfo["rotation"] = new JSONObject { ["x"] = child.eulerAngles.x, ["y"] = child.eulerAngles.y, ["z"] = child.eulerAngles.z };
+                    childInfo["scale"] = new JSONObject { ["x"] = child.localScale.x, ["y"] = child.localScale.y, ["z"] = child.localScale.z };
+
+                    if (PrefabUtility.IsPartOfAnyPrefab(child.gameObject))
                     {
-                        // CASE 1: It has a MeshFilter with a built-in mesh (Cube, Sphere, etc.)
-                        details["reason"] = "Primitive Shape";
-                        details["shape"] = mf.sharedMesh.name.Replace("Built-in\\/", "");
-                    }
-                    else if (child.GetComponents<Component>().Length == 1 && child.childCount > 0)
-                    {
-                        // CASE 2: It has ONLY a Transform component, but has children. It's a folder.
-                        details["reason"] = "Organizational Object";
+                        childInfo["assetPath"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(child.gameObject);
+                        JSONArray overrides = new JSONArray();
+                        foreach (var added in PrefabUtility.GetAddedComponents(child.gameObject))
+                        {
+                            overrides.Add(new JSONObject { ["type"] = "Added Component", ["component"] = added.GetType().FullName });
+                        }
+                        PropertyModification[] modifications = PrefabUtility.GetPropertyModifications(child.gameObject);
+                        if (modifications != null)
+                        {
+                            foreach (var mod in modifications)
+                            {
+                                if (mod.target != null)
+                                {
+                                    overrides.Add(new JSONObject { 
+                                        ["type"] = "Modified Property", 
+                                        ["component"] = mod.target.GetType().FullName,
+                                        ["property"] = mod.propertyPath,
+                                        ["value"] = mod.value
+                                    });
+                                }
+                            }
+                        }
+                        if(overrides.Count > 0)
+                        {
+                            childInfo["overrides"] = overrides;
+                        }
                     }
                     else
                     {
-                        // CASE 3: Anything else. An object with a mesh that isn't a primitive, or one
-                        // with other components like colliders, lights, or scripts.
-                        details["reason"] = "Generic GameObject";
+                        JSONObject details = new JSONObject();
+                        details["status"] = "Not a Prefab";
+
+                        MeshFilter mf = child.GetComponent<MeshFilter>();
+                        
+                        if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Built-in"))
+                        {
+                            details["reason"] = "Primitive Shape";
+                            details["shape"] = mf.sharedMesh.name.Replace("Built-in\\/", "");
+                        }
+                        else if (child.GetComponents<Component>().Length == 1 && child.childCount > 0)
+                        {
+                            details["reason"] = "Organizational Object";
+                        }
+                        else
+                        {
+                            details["reason"] = "Generic GameObject";
+                        }
+                        childInfo["assetPath"] = details;
                     }
-                    childInfo["assetPath"] = details;
+                    childrenArray.Add(childInfo);
                 }
-                childrenArray.Add(childInfo);
+                sceneObjectsReport[categoryName] = childrenArray;
             }
-            sceneObjectsReport[categoryName] = childrenArray;
         }
-    }
-    report["sceneObjects"] = sceneObjectsReport;
+        report["sceneObjects"] = sceneObjectsReport;
 #endif
-    return report;
-}
+        return report;
+    }
+
     private void SaveSummaryReport(JSONNode report)
     {
         try
