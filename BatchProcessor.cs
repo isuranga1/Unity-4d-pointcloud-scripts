@@ -44,6 +44,10 @@ public class BatchProcessor : MonoBehaviour
     [Tooltip("Should the application quit after the batch process is complete?")]
     public bool quitOnFinish = true;
 
+    [Header("Snapping Settings")]
+    [Tooltip("The layer mask representing the floor, used for the 'Snap to Floor' feature.")]
+    public LayerMask floorLayer;
+
     // --- Private State ---
     private enum EditorState { Tuning, BatchProcessing }
     private EditorState currentState = EditorState.Tuning;
@@ -57,6 +61,7 @@ public class BatchProcessor : MonoBehaviour
     private float liveRotationY;
     private bool isDirty = false;
     private int activeCameraIndex = 0;
+    private string currentAnimationDescription = "No description available.";
 
     void Start()
     {
@@ -115,6 +120,37 @@ public class BatchProcessor : MonoBehaviour
         activeCameraIndex = index;
     }
 
+    private void SnapToFloor()
+    {
+        if (smplPlayer == null) return;
+
+        Transform armatureTransform = smplPlayer.transform.Find("Armature"); 
+
+        if (armatureTransform == null)
+        {
+            Debug.LogError("Could not find 'Armature' child object on the SMPL model. Cannot snap to floor.");
+            return;
+        }
+
+        RaycastHit hit;
+        if (Physics.Raycast(armatureTransform.position, Vector3.down, out hit, 10f, floorLayer))
+        {
+            float distanceToFloor = armatureTransform.position.y - hit.point.y;
+            liveOffset.y -= distanceToFloor;
+
+            string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
+            tunedOffsets[animFileName] = liveOffset;
+            smplPlayer.UpdateLiveOffset(liveOffset);
+            isDirty = true;
+
+            Debug.Log($"Snapped Armature to floor. Adjusted Y-offset by {-distanceToFloor:F3}. New Y-offset: {liveOffset.y:F3}");
+        }
+        else
+        {
+            Debug.LogWarning("Snap to Floor failed: Raycast did not hit any object on the specified floor layer.");
+        }
+    }
+
     private void LoadInitialOffsets()
     {
         string masterConfigPath = Path.Combine(Application.streamingAssetsPath, initialOffsetsConfigName);
@@ -141,7 +177,7 @@ public class BatchProcessor : MonoBehaviour
         foreach (string filePath in animationFiles)
         {
             string animFileName = Path.GetFileNameWithoutExtension(filePath);
-            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
+            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName, "animation_offsets.json");
 
             if (File.Exists(offsetFilePath))
             {
@@ -229,13 +265,24 @@ public class BatchProcessor : MonoBehaviour
         string filePath = animationFiles[currentAnimationIndex];
         string animFileName = Path.GetFileNameWithoutExtension(filePath);
         
+        try
+        {
+            string jsonText = File.ReadAllText(filePath);
+            var animJson = JSON.Parse(jsonText);
+            currentAnimationDescription = animJson["description"] ?? "No description available.";
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"Error reading animation file {animFileName}: {e.Message}");
+            currentAnimationDescription = "Error loading description.";
+        }
+
         Vector3 offsetToLoad = tunedOffsets.ContainsKey(animFileName) ? tunedOffsets[animFileName] : Vector3.zero;
         float rotationToLoad = tunedRotations.ContainsKey(animFileName) ? tunedRotations[animFileName] : 0f;
         
         liveOffset = offsetToLoad;
         liveRotationY = rotationToLoad;
         smplPlayer.LoadAndPlayAnimation(filePath, offsetToLoad, rotationToLoad);
-        isDirty = false;
     }
 
     private void SaveCurrentOffset()
@@ -250,7 +297,7 @@ public class BatchProcessor : MonoBehaviour
         tunedOffsets[animFileName] = offset;
         tunedRotations[animFileName] = rotation;
 
-        string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName);
+        string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName);
         string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
         Directory.CreateDirectory(outputDirectory);
 
@@ -262,6 +309,7 @@ public class BatchProcessor : MonoBehaviour
         Debug.Log($"Saved current offset for '{animFileName}' to: {savePath}");
     }
 
+    // *** MODIFIED ***: This method now only saves offsets for animations that are currently included (not excluded).
     private void SaveAllModifiedOffsets()
     {
         if (tunedOffsets.Count == 0)
@@ -270,27 +318,36 @@ public class BatchProcessor : MonoBehaviour
             return;
         }
 
-        Debug.Log($"Saving offsets for {tunedOffsets.Count} modified animations...");
-
+        Debug.Log($"Attempting to save offsets for {tunedOffsets.Count} modified animations...");
+        int savedCount = 0;
         foreach (var animFileName in tunedOffsets.Keys)
         {
-            if (tunedRotations.ContainsKey(animFileName))
+            // Only save the offset if the animation is marked as included.
+            if (includedAnimations.ContainsKey(animFileName) && includedAnimations[animFileName])
             {
-                Vector3 offset = tunedOffsets[animFileName];
-                float rotation = tunedRotations[animFileName];
+                if (tunedRotations.ContainsKey(animFileName))
+                {
+                    Vector3 offset = tunedOffsets[animFileName];
+                    float rotation = tunedRotations[animFileName];
 
-                string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName);
-                string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
-                Directory.CreateDirectory(outputDirectory);
+                    string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName);
+                    string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
+                    Directory.CreateDirectory(outputDirectory);
 
-                JSONNode rootNode = new JSONObject();
-                JSONObject offsetNode = new JSONObject { ["x"] = offset.x, ["y"] = offset.y, ["z"] = offset.z, ["y_rotation"] = rotation };
-                rootNode[animFileName] = offsetNode;
+                    JSONNode rootNode = new JSONObject();
+                    JSONObject offsetNode = new JSONObject { ["x"] = offset.x, ["y"] = offset.y, ["z"] = offset.z, ["y_rotation"] = rotation };
+                    rootNode[animFileName] = offsetNode;
 
-                File.WriteAllText(savePath, rootNode.ToString(4));
-                Debug.Log($"Saved offset and rotation for '{animFileName}' to: {savePath}");
+                    File.WriteAllText(savePath, rootNode.ToString(4));
+                    savedCount++;
+                }
+            }
+            else
+            {
+                Debug.Log($"Skipping saving offset for excluded animation: {animFileName}");
             }
         }
+        Debug.Log($"Successfully saved offsets for {savedCount} included animations.");
     }
 
     private void SaveExcludedAnimationsConfig()
@@ -326,23 +383,38 @@ public class BatchProcessor : MonoBehaviour
     {
         if (currentState != EditorState.Tuning || animationFiles.Count == 0) return;
         
-        GUI.Box(new Rect(10, 10, 330, 350), "Animation Tuner & Batcher");
+        GUIStyle descriptionStyle = new GUIStyle(GUI.skin.box);
+        descriptionStyle.alignment = TextAnchor.UpperLeft;
+        descriptionStyle.wordWrap = true;
+        descriptionStyle.padding = new RectOffset(5, 5, 5, 5);
+
+        GUI.Box(new Rect(10, 10, 330, 440), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
         
-        bool isIncluded = includedAnimations[animFileName];
-        includedAnimations[animFileName] = GUI.Toggle(new Rect(20, 40, 300, 20), isIncluded, $" Process Animation: {animFileName}");
+        float yPos = 40;
 
-        GUI.Label(new Rect(20, 70, 40, 20), $"X: {liveOffset.x:F2}");
-        liveOffset.x = GUI.HorizontalSlider(new Rect(70, 75, 260, 20), liveOffset.x, -10f, 10f);
+        bool isIncluded = includedAnimations[animFileName];
+        includedAnimations[animFileName] = GUI.Toggle(new Rect(20, yPos, 300, 20), isIncluded, $" Process Animation: {animFileName}");
+        yPos += 30;
+
+        GUI.Label(new Rect(20, yPos, 300, 60), currentAnimationDescription, descriptionStyle);
+        yPos += 70;
+
+        GUI.Label(new Rect(20, yPos, 40, 20), $"X: {liveOffset.x:F2}");
+        liveOffset.x = GUI.HorizontalSlider(new Rect(70, yPos + 2.5f, 260, 20), liveOffset.x, -10f, 10f);
+        yPos += 30;
         
-        GUI.Label(new Rect(20, 100, 40, 20), $"Y: {liveOffset.y:F2}");
-        liveOffset.y = GUI.HorizontalSlider(new Rect(70, 105, 260, 20), liveOffset.y, -5f, 5f);
+        GUI.Label(new Rect(20, yPos, 40, 20), $"Y: {liveOffset.y:F2}");
+        liveOffset.y = GUI.HorizontalSlider(new Rect(70, yPos + 2.5f, 260, 20), liveOffset.y, -5f, 5f);
+        yPos += 30;
         
-        GUI.Label(new Rect(20, 130, 40, 20), $"Z: {liveOffset.z:F2}");
-        liveOffset.z = GUI.HorizontalSlider(new Rect(70, 135, 260, 20), liveOffset.z, -10f, 10f);
+        GUI.Label(new Rect(20, yPos, 40, 20), $"Z: {liveOffset.z:F2}");
+        liveOffset.z = GUI.HorizontalSlider(new Rect(70, yPos + 2.5f, 260, 20), liveOffset.z, -10f, 10f);
+        yPos += 30;
         
-        GUI.Label(new Rect(20, 160, 80, 20), $"Rot Y: {liveRotationY:F1}");
-        liveRotationY = GUI.HorizontalSlider(new Rect(90, 165, 240, 20), liveRotationY, -180f, 180f);
+        GUI.Label(new Rect(20, yPos, 80, 20), $"Rot Y: {liveRotationY:F1}");
+        liveRotationY = GUI.HorizontalSlider(new Rect(90, yPos + 2.5f, 240, 20), liveRotationY, -180f, 180f);
+        yPos += 35;
 
         if (GUI.changed)
         {
@@ -353,35 +425,44 @@ public class BatchProcessor : MonoBehaviour
             isDirty = true;
         }
 
-        if (GUI.Button(new Rect(20, 195, 70, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
-        if (GUI.Button(new Rect(95, 195, 70, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
+        if (GUI.Button(new Rect(20, yPos, 70, 20), "<< Prev")) LoadAnimationForTuning(currentAnimationIndex - 1);
+        if (GUI.Button(new Rect(95, yPos, 70, 20), "Next >>")) LoadAnimationForTuning(currentAnimationIndex + 1);
         
-        if (GUI.Button(new Rect(170, 195, 95, 20), "Save Current"))
+        if (GUI.Button(new Rect(170, yPos, 95, 20), "Save Current"))
         {
             SaveCurrentOffset();
         }
 
         GUI.color = isDirty ? Color.green : Color.white;
-        if (GUI.Button(new Rect(270, 195, 60, 20), "Save All"))
+        if (GUI.Button(new Rect(270, yPos, 60, 20), "Save All"))
         {
             SaveAllModifiedOffsets();
             SaveExcludedAnimationsConfig();
             isDirty = false;
         }
         GUI.color = Color.white;
+        yPos += 30;
         
+        if (GUI.Button(new Rect(20, yPos, 300, 20), "Snap to Floor"))
+        {
+            SnapToFloor();
+        }
+        yPos += 30;
+
         string cameraName = (cameras.Count > 0 && cameras[activeCameraIndex] != null) ? cameras[activeCameraIndex].name : "None";
-        GUI.Label(new Rect(20, 225, 200, 20), $"Active Camera: {cameraName}");
-        if (GUI.Button(new Rect(240, 225, 80, 20), "Next Cam"))
+        GUI.Label(new Rect(20, yPos, 200, 20), $"Active Camera: {cameraName}");
+        if (GUI.Button(new Rect(240, yPos, 80, 20), "Next Cam"))
         {
             SwitchToNextCamera();
         }
+        yPos += 30;
 
         int includedCount = includedAnimations.Values.Count(b => b);
-        GUI.Label(new Rect(20, 255, 300, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
+        GUI.Label(new Rect(20, yPos, 300, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
+        yPos += 30;
 
         GUI.backgroundColor = new Color(0.8f, 1f, 0.8f);
-        if (GUI.Button(new Rect(20, 285, 300, 40), $"Start Batch Process ({includedCount} items)"))
+        if (GUI.Button(new Rect(20, yPos, 300, 40), $"Start Batch Process ({includedCount} items)"))
         {
             currentState = EditorState.BatchProcessing;
             StartCoroutine(RunAutomatedBatch());
@@ -414,7 +495,7 @@ public class BatchProcessor : MonoBehaviour
             Vector3 finalOffset = Vector3.zero;
             float finalRotation = 0f;
             string description = "No description found.";
-            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, animFileName, sceneFolderName, "animation_offsets.json");
+            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName, "animation_offsets.json");
 
             try
             {
@@ -449,7 +530,7 @@ public class BatchProcessor : MonoBehaviour
             individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
             individualReport["tunedRotationY"] = finalRotation;
 
-            string samplerSubfolderPath = Path.Combine(environmentFolderName, animFileName, sceneFolderName);
+            string samplerSubfolderPath = Path.Combine(environmentFolderName, sceneFolderName, animFileName);
             string finalOutputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, samplerSubfolderPath);
             SaveIndividualReport(individualReport, finalOutputDirectory);
 
