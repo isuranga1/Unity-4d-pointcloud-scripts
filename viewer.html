@@ -97,7 +97,6 @@
             z-index: 1000;
         }
         
-        /* NEW: Hint for camera focus control */
         #focus-hint {
             position: absolute;
             bottom: 20px;
@@ -106,6 +105,7 @@
             padding: 8px 12px;
             border-radius: 6px;
             font-size: 12px;
+            line-height: 1.5;
             color: rgba(255,255,255,0.7);
             pointer-events: auto;
             border: 1px solid rgba(255,255,255,0.1);
@@ -431,7 +431,6 @@
 </head>
 <body>
     <div id="container">
-        <!-- Sidebar for navigation -->
         <div id="sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-title">Dataset Navigator</div>
@@ -450,9 +449,7 @@
             </div>
         </div>
 
-        <!-- Main content area -->
         <div id="main-content">
-            <!-- 3D Viewer -->
             <div id="viewer-container">
                 <div id="canvas-container"></div>
                 
@@ -462,7 +459,6 @@
                 </div>
 
                 <div id="ui-overlay">
-                    <!-- Info Panel -->
                     <div id="info-panel" class="ui-panel">
                         <div class="info-row">
                             <span class="info-label">Scene:</span>
@@ -487,7 +483,6 @@
                         <div class="control-button" id="reset-view">🔄 Reset View</div>
                     </div>
 
-                    <!-- Settings Panel -->
                     <div id="settings-panel" class="ui-panel">
                         <div class="slider-container">
                             <span class="slider-label">Point Size:</span>
@@ -509,7 +504,6 @@
                         <div class="control-button" id="use-label-colors">🎨 Label Colors</div>
                     </div>
 
-                    <!-- Controls Panel -->
                     <div id="controls-panel" class="ui-panel">
                         <div class="control-button" id="play-pause">
                             <span id="play-icon">▶️</span>
@@ -531,17 +525,15 @@
                         </div>
                     </div>
 
-                    <!-- NEW: Hint for focus control -->
                     <div id="focus-hint">
-                        <b>C</b> + Click to set focus point
+                        <b>C</b> + Click to set focus point <br>
+                        <b>Right-Click</b> + Drag to pan
                     </div>
                 </div>
             </div>
             
-            <!-- Draggable Resizer Handle -->
             <div id="resizer"></div>
 
-            <!-- Video Player -->
             <div id="video-container">
                 <video id="video-player" class="hidden" muted playsinline>
                     Your browser does not support the video tag.
@@ -583,10 +575,13 @@
                 this.wireframeGroup = new THREE.Group();
                 this.showWireframe = false;
                 
-                // NEW: Camera target properties
+                // Camera target properties
                 this.cameraTarget = new THREE.Vector3(0, 0, 0);
                 this.targetIndicator = null;
                 this.isCKeyDown = false;
+                
+                // Panning state
+                this.isPanning = false;
                 
                 this.init();
                 this.setupControls();
@@ -615,7 +610,7 @@
                 const axesHelper = new THREE.AxesHelper(2);
                 this.scene.add(axesHelper);
 
-                // NEW: Initialize and add target indicator
+                // Initialize and add target indicator
                 const indicatorGeom = new THREE.SphereGeometry(0.05, 16, 16);
                 const indicatorMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
                 this.targetIndicator = new THREE.Mesh(indicatorGeom, indicatorMat);
@@ -769,8 +764,10 @@
                 
                 this.loadVideo(sceneData.videoFile);
                 if (this.frames.length > 0) {
-                    this.resetView();
+                    // This will display the first frame, which is needed for resetView to work correctly
                     this.seekToFrame(0);
+                    // This will now center on the newly displayed point cloud
+                    this.resetView(); 
                 }
                 
                 this.showWireframe = false;
@@ -819,33 +816,68 @@
             setupControls() {
                 const canvas = this.renderer.domElement;
 
+                // Prevent the default context menu on right-click
+                canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+
+                // Handle left and right mouse buttons
                 canvas.addEventListener('mousedown', (event) => {
-                    this.mouseDown = true;
+                    // event.button === 0 is left, 1 is middle, 2 is right
+                    if (event.button === 0) {
+                        this.mouseDown = true; // For rotation
+                    } else if (event.button === 2) {
+                        this.isPanning = true; // For panning
+                    }
                     this.previousMousePosition.set(event.clientX, event.clientY);
                 });
 
-                canvas.addEventListener('mouseup', () => {
-                    this.mouseDown = false;
+                // Handle left and right mouse buttons
+                canvas.addEventListener('mouseup', (event) => {
+                    if (event.button === 0) {
+                        this.mouseDown = false;
+                    } else if (event.button === 2) {
+                        this.isPanning = false;
+                    }
                 });
                 
+                // Handle panning (right-click drag) and rotation (left-click drag)
                 canvas.addEventListener('mousemove', (event) => {
-                    if (!this.mouseDown) return;
+                    if (!this.mouseDown && !this.isPanning) return; // Exit if no button is pressed
 
                     const deltaMove = new THREE.Vector2(
                         event.clientX - this.previousMousePosition.x,
                         event.clientY - this.previousMousePosition.y
                     );
 
-                    const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
-                    const spherical = new THREE.Spherical().setFromVector3(cameraOffset);
-                    
-                    spherical.theta -= deltaMove.x * 0.005;
-                    spherical.phi -= deltaMove.y * 0.005;
-                    spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
-                    
-                    cameraOffset.setFromSpherical(spherical);
-                    this.camera.position.copy(this.cameraTarget).add(cameraOffset);
-                    this.camera.lookAt(this.cameraTarget);
+                    if (this.isPanning) {
+                        // --- Panning Logic ---
+                        const panSpeedFactor = 0.002;
+                        const distance = this.camera.position.distanceTo(this.cameraTarget);
+                        const effectivePanSpeed = distance * panSpeedFactor;
+                        const panOffset = new THREE.Vector3();
+                        
+                        const rightVector = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
+                        panOffset.add(rightVector.multiplyScalar(-deltaMove.x * effectivePanSpeed));
+                        
+                        const upVector = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
+                        panOffset.add(upVector.multiplyScalar(deltaMove.y * effectivePanSpeed));
+                        
+                        this.camera.position.add(panOffset);
+                        this.cameraTarget.add(panOffset);
+                        this.targetIndicator.position.copy(this.cameraTarget);
+
+                    } else if (this.mouseDown) { 
+                        // --- Rotation Logic (Existing) ---
+                        const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
+                        const spherical = new THREE.Spherical().setFromVector3(cameraOffset);
+                        
+                        spherical.theta -= deltaMove.x * 0.005;
+                        spherical.phi -= deltaMove.y * 0.005;
+                        spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
+                        
+                        cameraOffset.setFromSpherical(spherical);
+                        this.camera.position.copy(this.cameraTarget).add(cameraOffset);
+                        this.camera.lookAt(this.cameraTarget);
+                    }
 
                     this.previousMousePosition.set(event.clientX, event.clientY);
                 });
@@ -858,7 +890,7 @@
                     this.camera.position.copy(this.cameraTarget).add(cameraOffset);
                 });
 
-                // NEW: Logic for setting camera target with 'C' key + Click
+                // Logic for setting camera target with 'C' key + Click
                 window.addEventListener('keydown', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = true; });
                 window.addEventListener('keyup', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = false; });
 
@@ -1234,9 +1266,40 @@
                 }
             }
 
+            // MODIFIED: This function now intelligently centers on the point cloud.
             resetView() {
-                this.camera.position.set(5, 5, 5);
-                this.cameraTarget.set(0, 0, 0);
+                if (this.points && this.points.geometry) {
+                    // 1. Calculate the center of the current point cloud
+                    const boundingBox = new THREE.Box3().setFromBufferAttribute(this.points.geometry.attributes.position);
+                    
+                    if (!boundingBox.isEmpty()) {
+                        boundingBox.getCenter(this.cameraTarget);
+
+                        // 2. Calculate a sensible camera distance based on the cloud's size
+                        const size = new THREE.Vector3();
+                        boundingBox.getSize(size);
+                        const maxDim = Math.max(size.x, size.y, size.z);
+                        const distance = maxDim * 1.5; // Adjust this multiplier as needed
+
+                        // 3. Position the camera to frame the object
+                        const newPosition = this.cameraTarget.clone();
+                        newPosition.z += distance;
+                        newPosition.y += distance * 0.5; // Add some height for a better angle
+                        this.camera.position.copy(newPosition);
+
+                    } else {
+                        // Fallback for empty point clouds
+                        this.cameraTarget.set(0, 0, 0);
+                        this.camera.position.set(5, 5, 5);
+                    }
+                    
+                } else {
+                    // Fallback if no point cloud is loaded
+                    this.cameraTarget.set(0, 0, 0);
+                    this.camera.position.set(5, 5, 5);
+                }
+                
+                // 4. Update the visual indicator and point the camera at the new target
                 this.targetIndicator.position.copy(this.cameraTarget);
                 this.camera.lookAt(this.cameraTarget);
             }
