@@ -496,10 +496,10 @@ public class BatchProcessor : MonoBehaviour
             float finalRotation = 0f;
             string description = "No description found.";
             string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName, "animation_offsets.json");
-
+            JSONNode animJson = null; 
             try
             {
-                var animJson = JSON.Parse(File.ReadAllText(filePath));
+                animJson = JSON.Parse(File.ReadAllText(filePath));
                 if (animJson["description"] != null) description = animJson["description"];
 
                 if (File.Exists(offsetFilePath))
@@ -529,6 +529,26 @@ public class BatchProcessor : MonoBehaviour
             individualReport["description"] = description;
             individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
             individualReport["tunedRotationY"] = finalRotation;
+            if (animJson["prompt_segments"] != null)
+            {
+                JSONArray newSegments = new JSONArray();
+
+                foreach (var segmentNode in animJson["prompt_segments"].AsArray)
+                {
+                    var segment = segmentNode.Value;
+
+                    JSONObject segObj = new JSONObject();
+                    segObj["prompt"] = segment["prompt"];
+                    segObj["label"] = segment["label"];
+                    segObj["start_frame"] = segment["start_frame"];
+                    segObj["end_frame"] = segment["end_frame"];
+                    segObj["num_frames"] = segment["num_frames"];
+
+                    newSegments.Add(segObj);
+                }
+
+                individualReport["prompt_segments"] = newSegments;
+            }
 
             string samplerSubfolderPath = Path.Combine(environmentFolderName, sceneFolderName, animFileName);
             string finalOutputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, samplerSubfolderPath);
