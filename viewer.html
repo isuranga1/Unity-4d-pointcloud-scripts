@@ -605,14 +605,14 @@
                             <span class="slider-label">Background:</span>
                             <div class="color-swatches">
                                 <button class="color-swatch" data-color="0x000000" style="background-color: #000;"></button>
-                                <button class="color-swatch active" data-color="0x0a0a0a" style="background-color: #0a0a0a; border: 1px solid #555;"></button>
+                                <button class="color-swatch active" data-color="0x1a1a1a" style="background-color: #1a1a1a; border: 1px solid #555;"></button>
                                 <button class="color-swatch" data-color="0xffffff" style="background-color: #fff;"></button>
                             </div>
                         </div>
 
+                        <div class="control-button active" id="toggle-color-mode">🎨 View: Label</div>
                         <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
                         <div class="control-button" id="toggle-stats">📊 Stats</div>
-                        <div class="control-button" id="use-label-colors">🎨 Label Colors</div>
                         <div class="control-button active" id="toggle-focus-point">🎯 Focus Point</div>
                     </div>
 
@@ -676,7 +676,9 @@
                 this.fps = 10;
                 this.speed = 1.0;
                 this.frameInterval = null;
-                this.useLabelColors = true;
+                
+                // *** NEW ***: State for color mode
+                this.colorMode = 'label'; // Can be 'label' or 'rgb'
                 
                 this.mouse = new THREE.Vector2();
                 this.mouseDown = false;
@@ -694,7 +696,7 @@
                 // Camera target properties
                 this.cameraTarget = new THREE.Vector3(0, 0, 0);
                 this.targetIndicator = null;
-                this.showFocusPoint = true; // New property to control focus point visibility
+                this.showFocusPoint = true; 
                 this.isCKeyDown = false;
                 
                 // Panning state
@@ -714,13 +716,13 @@
                 const viewerContainer = document.getElementById('canvas-container');
                 const rect = viewerContainer.getBoundingClientRect();
                 this.renderer.setSize(rect.width, rect.height);
-                this.renderer.setClearColor(0x0a0a0a, 1);
+                this.renderer.setClearColor(0x1a1a1a, 1);
                 viewerContainer.appendChild(this.renderer.domElement);
 
                 this.camera.position.set(5, 5, 5);
                 this.camera.lookAt(this.cameraTarget);
 
-                this.scene.background = new THREE.Color(0x0a0a0a);
+                this.scene.background = new THREE.Color(0x1a1a1a);
                 
                 const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
                 this.scene.add(ambientLight);
@@ -736,7 +738,7 @@
                 const indicatorMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
                 this.targetIndicator = new THREE.Mesh(indicatorGeom, indicatorMat);
                 this.targetIndicator.position.copy(this.cameraTarget);
-                this.targetIndicator.visible = this.showFocusPoint; // Set initial visibility
+                this.targetIndicator.visible = this.showFocusPoint;
                 this.scene.add(this.targetIndicator);
 
                 this.scene.add(this.wireframeGroup);
@@ -820,17 +822,11 @@
                 const toggleBtn = document.getElementById('toggle-fullscreen');
                 
                 if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen().then(() => {
-                        toggleBtn.classList.add('active');
-                        toggleBtn.innerHTML = '🖼️ Exit Fullscreen';
-                    }).catch(err => {
+                    document.documentElement.requestFullscreen().catch(err => {
                         console.log('Error entering fullscreen:', err);
                     });
                 } else {
-                    document.exitFullscreen().then(() => {
-                        toggleBtn.classList.remove('active');
-                        toggleBtn.innerHTML = '🖥️ Fullscreen';
-                    }).catch(err => {
+                    document.exitFullscreen().catch(err => {
                         console.log('Error exiting fullscreen:', err);
                     });
                 }
@@ -964,8 +960,7 @@
                 }
                 
                 this.showWireframe = false;
-                const wfButton = document.getElementById('toggle-wireframe');
-                wfButton.classList.remove('active');
+                document.getElementById('toggle-wireframe').classList.remove('active');
                 this.wireframeGroup.visible = false;
                 
                 this.updateSelectedTreeItem(path);
@@ -1098,15 +1093,13 @@
                 });
                 
                 const resizer = document.getElementById('resizer');
-                const videoContainer = document.getElementById('video-container');
-                const mainContent = document.getElementById('main-content');
                 resizer.addEventListener('mousedown', (e) => {
                     e.preventDefault();
-                    let h = videoContainer.offsetHeight, y = e.clientY;
+                    let h = document.getElementById('video-container').offsetHeight, y = e.clientY;
                     const onMove = (me) => {
                         let newH = h - (me.clientY - y);
-                        newH = Math.max(50, Math.min(mainContent.offsetHeight - 150, newH));
-                        videoContainer.style.height = `${newH}px`;
+                        newH = Math.max(50, Math.min(document.getElementById('main-content').offsetHeight - 150, newH));
+                        document.getElementById('video-container').style.height = `${newH}px`;
                         this.updateCameraAspect();
                     };
                     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -1156,34 +1149,30 @@
                     e.currentTarget.classList.toggle('active', this.showWireframe);
                 });
 
-                document.getElementById('use-label-colors').addEventListener('click', (e) => {
-                    this.useLabelColors = !this.useLabelColors;
-                    e.currentTarget.classList.toggle('active', this.useLabelColors);
-                    e.currentTarget.innerHTML = this.useLabelColors ? '🎨 Label Colors' : '📸 Original Colors';
-                    if (this.frames.length > 0) this.displayFrame(this.currentFrame);
+                // *** MODIFIED ***: Event listener for the new color mode toggle
+                document.getElementById('toggle-color-mode').addEventListener('click', (e) => {
+                    this.colorMode = (this.colorMode === 'label') ? 'rgb' : 'label';
+                    
+                    e.currentTarget.innerHTML = this.colorMode === 'label' ? '🎨 View: Label' : '📸 View: RGB';
+                    e.currentTarget.classList.toggle('active', this.colorMode === 'label');
+                    
+                    this.updatePointColors();
                 });
 
-                // New: Toggle focus point visibility
                 document.getElementById('toggle-focus-point').addEventListener('click', (e) => {
                     this.showFocusPoint = !this.showFocusPoint;
-                    if (this.targetIndicator) {
-                        this.targetIndicator.visible = this.showFocusPoint;
-                    }
+                    if (this.targetIndicator) this.targetIndicator.visible = this.showFocusPoint;
                     e.currentTarget.classList.toggle('active', this.showFocusPoint);
                 });
 
-                // New: Background color switcher
                 document.querySelectorAll('.color-swatch').forEach(swatch => {
                     swatch.addEventListener('click', (e) => {
-                        const currentActive = document.querySelector('.color-swatch.active');
-                        if (currentActive) currentActive.classList.remove('active');
-                        
+                        document.querySelector('.color-swatch.active')?.classList.remove('active');
                         const target = e.currentTarget;
                         target.classList.add('active');
                         this.setBackgroundColor(target.dataset.color);
                     });
                 });
-
 
                 document.getElementById('folder-upload').addEventListener('change', async (e) => await this.loadDataset(e.target.files));
 
@@ -1209,7 +1198,6 @@
 
                 window.addEventListener('resize', () => this.updateCameraAspect());
 
-                // Handle fullscreen change events
                 document.addEventListener('fullscreenchange', () => {
                     const toggleBtn = document.getElementById('toggle-fullscreen');
                     if (document.fullscreenElement) {
@@ -1258,53 +1246,52 @@
                 });
             }
             
+            // *** MODIFIED ***: These parsers now return a default 'colors' array
+            _createDefaultFrameData(positions, labels) {
+                const colors = new Float32Array(positions.length);
+                colors.fill(1.0); // Default to white
+                return { 
+                    positions: new Float32Array(positions), 
+                    labels: labels, 
+                    colors: colors,
+                    pointCount: positions.length / 3 
+                };
+            }
+
             parsePLY(content) {
                 const lines = content.split('\n');
-                let dataStartIndex = 0;
-                for (let i = 0; i < lines.length; i++) {
-                    if (lines[i].trim() === 'end_header') {
-                        dataStartIndex = i + 1;
-                        break;
-                    }
-                }
-                const positions = [];
-                const labels = [];
+                let dataStartIndex = lines.findIndex(line => line.trim() === 'end_header') + 1;
+                const positions = [], labels = [];
                 for (let i = dataStartIndex; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    if (!line) continue;
-                    const parts = line.split(/\s+/);
+                    const parts = lines[i].trim().split(/\s+/);
                     if (parts.length >= 3) {
-                        const x = parseFloat(parts[0]);
-                        const y = parseFloat(parts[1]);
-                        const z = parseFloat(parts[2]);
-                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                        const [x, y, z] = parts.slice(0, 3).map(parseFloat);
+                        if (!isNaN(x)) {
                             positions.push(x, y, z);
                             labels.push(parts.length > 3 ? parts[3] : 'default');
                         }
                     }
                 }
-                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+                return this._createDefaultFrameData(positions, labels);
             }
 
             parseXYZ(content) {
                 const lines = content.split('\n');
-                const positions = [];
-                const labels = [];
+                const positions = [], labels = [];
                 for (const line of lines) {
                     const parts = line.trim().split(/\s+/);
                     if (parts.length >= 3) {
-                        const x = parseFloat(parts[0]);
-                        const y = parseFloat(parts[1]);
-                        const z = parseFloat(parts[2]);
-                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                        const [x, y, z] = parts.slice(0, 3).map(parseFloat);
+                        if (!isNaN(x)) {
                             positions.push(x, y, z);
                             labels.push(parts.length > 3 ? parts[3] : 'default');
                         }
                     }
                 }
-                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+                return this._createDefaultFrameData(positions, labels);
             }
 
+            // *** MODIFIED ***: The PCD parser now handles the 'rgb' field
             parsePCD(content) {
                 const lines = content.split('\n');
                 let dataStart = 0, pointCount = 0, dataFormat = 'ascii';
@@ -1320,20 +1307,38 @@
                     }
                 }
                 if (dataFormat !== 'ascii') throw new Error('Only ASCII PCD format is supported');
-                const positions = [], labels = [];
+                
+                const positions = [], labels = [], colors = [];
                 const xIndex = fields.indexOf('x'), yIndex = fields.indexOf('y'), zIndex = fields.indexOf('z');
+                const rgbIndex = fields.indexOf('rgb');
                 const labelIndex = fields.includes('label') ? fields.indexOf('label') : fields.indexOf('semantic');
+                
                 for (let i = dataStart; i < dataStart + pointCount && i < lines.length; i++) {
                     const parts = lines[i].trim().split(/\s+/);
                     if (parts.length >= 3) {
                         const x = parseFloat(parts[xIndex]), y = parseFloat(parts[yIndex]), z = parseFloat(parts[zIndex]);
-                        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                        if (!isNaN(x)) {
                             positions.push(x, y, z);
                             labels.push(labelIndex !== -1 && parts[labelIndex] ? parts[labelIndex] : 'default');
+                            
+                            if (rgbIndex !== -1) {
+                                const packedRgb = parseInt(parts[rgbIndex]);
+                                const r = (packedRgb >> 16) & 0xFF;
+                                const g = (packedRgb >> 8) & 0xFF;
+                                const b = packedRgb & 0xFF;
+                                colors.push(r / 255, g / 255, b / 255);
+                            } else {
+                                colors.push(1.0, 1.0, 1.0); // Default to white if no RGB data
+                            }
                         }
                     }
                 }
-                return { positions: new Float32Array(positions), labels: labels, pointCount: positions.length / 3 };
+                return { 
+                    positions: new Float32Array(positions), 
+                    labels: labels, 
+                    colors: new Float32Array(colors), 
+                    pointCount: positions.length / 3 
+                };
             }
 
             getColorForLabel(label) {
@@ -1356,6 +1361,7 @@
                 return [(h & 0xFF) / 255, ((h >> 8) & 0xFF) / 255, ((h >> 16) & 0xFF) / 255];
             }
             
+            // *** MODIFIED ***: Displays frame using the current color mode
             displayFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
                 const frameData = this.frames[frameIndex];
@@ -1374,7 +1380,10 @@
 
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(frameData.positions, 3));
-                geometry.setAttribute('color', new THREE.BufferAttribute(this.generateLabelColors(frameData.labels), 3));
+                
+                const colors = this.colorMode === 'rgb' ? frameData.colors : this.generateLabelColors(frameData.labels);
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
                 const material = new THREE.PointsMaterial({
                     size: parseFloat(document.getElementById('point-size').value),
                     vertexColors: true,
@@ -1390,12 +1399,9 @@
                 const pointsByLabel = new Map();
                 for (let i = 0; i < frameData.labels.length; i++) {
                     const label = frameData.labels[i];
-                    if (label === 'default' || String(label).toLowerCase().includes('floor') || String(label).toLowerCase().includes('wall') || String(label).toLowerCase().includes('ceiling')) {
-                        continue;
-                    }
-                    if (!pointsByLabel.has(label)) {
-                        pointsByLabel.set(label, []);
-                    }
+                    if (['default', 'floor', 'wall', 'ceiling'].some(term => String(label).toLowerCase().includes(term))) continue;
+                    
+                    if (!pointsByLabel.has(label)) pointsByLabel.set(label, []);
                     pointsByLabel.get(label).push(
                         new THREE.Vector3(
                             frameData.positions[i * 3],
@@ -1409,14 +1415,10 @@
 
                 for (const [label, points] of pointsByLabel.entries()) {
                     if (points.length < 2) continue;
-
                     const box = new THREE.Box3().setFromPoints(points);
-                    
                     if (box.isEmpty()) continue;
-
                     const color = new THREE.Color(...this.getColorForLabel(label));
-                    const helper = new THREE.Box3Helper(box, color);
-                    this.wireframeGroup.add(helper);
+                    this.wireframeGroup.add(new THREE.Box3Helper(box, color));
                 }
             }
 
@@ -1424,11 +1426,20 @@
                 const c = new Float32Array(labels.length * 3);
                 for (let i = 0; i < labels.length; i++) {
                     const ca = this.getColorForLabel(labels[i]);
-                    c[i * 3] = ca[0];
-                    c[i * 3 + 1] = ca[1];
-                    c[i * 3 + 2] = ca[2];
+                    c.set(ca, i * 3);
                 }
                 return c;
+            }
+
+            // *** NEW ***: Function to update colors without reloading geometry
+            updatePointColors() {
+                if (!this.points || !this.frames[this.currentFrame]) return;
+
+                const frameData = this.frames[this.currentFrame];
+                const newColors = this.colorMode === 'rgb' ? frameData.colors : this.generateLabelColors(frameData.labels);
+                
+                this.points.geometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
+                this.points.geometry.attributes.color.needsUpdate = true;
             }
 
             updatePointSize(size) {
@@ -1464,8 +1475,7 @@
                     let nextFrame = this.currentFrame + 1;
                     if (nextFrame >= this.frames.length) {
                         nextFrame = 0;
-                        const video = document.getElementById('video-player');
-                        if (video) video.currentTime = 0;
+                        document.getElementById('video-player')?.load();
                     }
                     this.seekToFrame(nextFrame);
                 }, interval);
@@ -1506,20 +1516,16 @@
             }
 
             resetView() {
-                if (this.points && this.points.geometry) {
+                if (this.points?.geometry.attributes.position) {
                     const boundingBox = new THREE.Box3().setFromBufferAttribute(this.points.geometry.attributes.position);
                     
                     if (!boundingBox.isEmpty()) {
                         boundingBox.getCenter(this.cameraTarget);
-
-                        const size = new THREE.Vector3();
-                        boundingBox.getSize(size);
+                        const size = boundingBox.getSize(new THREE.Vector3());
                         const maxDim = Math.max(size.x, size.y, size.z);
                         const distance = maxDim * 1.5;
 
-                        const newPosition = this.cameraTarget.clone();
-                        newPosition.z += distance;
-                        newPosition.y += distance * 0.5;
+                        const newPosition = this.cameraTarget.clone().add(new THREE.Vector3(0, distance * 0.5, distance));
                         this.camera.position.copy(newPosition);
 
                     } else {
@@ -1557,7 +1563,7 @@
                 const totalSecs = Math.floor(seconds);
                 const mins = Math.floor(totalSecs / 60);
                 const secs = totalSecs % 60;
-                return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
             }
 
             animate() {
