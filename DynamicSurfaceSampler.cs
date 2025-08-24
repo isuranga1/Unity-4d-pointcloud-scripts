@@ -19,6 +19,14 @@ public class DynamicSurfaceSampler : MonoBehaviour
         public bool exactMatch;
     }
 
+    // *** NEW ***: A struct to hold all data for a single sampled point.
+    private struct SampledPoint
+    {
+        public Vector3 position;
+        public Color32 color;
+        public string label;
+    }
+
     [Header("Capture Settings")]
     public float captureDuration = 5f;
     public float captureFPS = 10f;
@@ -26,7 +34,7 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
     [Header("Randomization")]
     public int fixedRandomSeed = 1337;
-    
+
     void Start()
     {
         // The BatchProcessor now controls when sampling starts.
@@ -41,26 +49,27 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         for (int frame = 0; frame < totalFrames; frame++)
         {
-            List<Vector3> sampledPoints = new List<Vector3>();
-            List<string> labels = new List<string>();
+            // *** MODIFIED ***: Use the new SampledPoint struct list.
+            List<SampledPoint> sampledPoints = new List<SampledPoint>();
 
-            SampleScenePoints(sampledPoints, labels);
-            SaveFrameToPCD(sampledPoints, labels, frame, outputSubFolder);
+            SampleScenePoints(sampledPoints);
+            SaveFrameToPCD(sampledPoints, frame, outputSubFolder);
 
             yield return new WaitForSeconds(interval);
         }
 
         Debug.Log("Sampling for current animation finished.");
     }
-    
-    void SampleScenePoints(List<Vector3> sampledPoints, List<string> labels)
+
+    // *** MODIFIED ***: Simplified signature to pass one list.
+    void SampleScenePoints(List<SampledPoint> sampledPoints)
     {
         Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
 
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
         {
             if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
-            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, sampledPoints, labels);
+            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, sampledPoints);
         }
 
         foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
@@ -68,17 +77,34 @@ public class DynamicSurfaceSampler : MonoBehaviour
             if (!smr.gameObject.activeInHierarchy) continue;
             Mesh bakedMesh = new Mesh();
             smr.BakeMesh(bakedMesh);
-            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, sampledPoints, labels);
+            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, sampledPoints);
         }
     }
 
-    void SampleMeshPointsUniform(Mesh mesh, Transform transform, string objectName, Bounds roomBounds, List<Vector3> sampledPoints, List<string> labels)
+    // *** MODIFIED ***: This is the core of the change. It now samples color.
+    void SampleMeshPointsUniform(Mesh mesh, Transform transform, string objectName, Bounds roomBounds, List<SampledPoint> sampledPoints)
     {
+        if (mesh.vertexCount == 0) return;
+
         Vector3[] vertices = mesh.vertices;
         int[] triangles = mesh.triangles;
+        Vector2[] uvs = mesh.uv; // *** NEW ***: Get UV coordinates.
+
+        // *** NEW ***: Get the renderer and texture for color sampling.
+        Renderer renderer = transform.GetComponent<Renderer>();
+        Texture2D texture = null;
+        if (renderer != null && renderer.sharedMaterial != null)
+        {
+            texture = renderer.sharedMaterial.mainTexture as Texture2D;
+            if (texture != null && !texture.isReadable)
+            {
+                Debug.LogWarning($"Texture on '{objectName}' is not marked as Read/Write. Colors may be incorrect. Please enable it in texture import settings.", texture);
+                texture = null; // Can't sample from a non-readable texture.
+            }
+        }
+        
         int objectID = objectName.GetHashCode();
         float objectDensity = GetDensityForObject(objectName);
-
         List<float> triangleAreas = new List<float>();
         float totalSurfaceArea = 0f;
 
@@ -119,15 +145,44 @@ public class DynamicSurfaceSampler : MonoBehaviour
             }
 
             int triIndex = selectedTriangle * 3;
-            Vector3 v0 = transform.TransformPoint(vertices[triangles[triIndex]]);
-            Vector3 v1 = transform.TransformPoint(vertices[triangles[triIndex + 1]]);
-            Vector3 v2 = transform.TransformPoint(vertices[triangles[triIndex + 2]]);
-            Vector3 sample = SamplePointOnTriangle(v0, v1, v2);
+            int vertIndex0 = triangles[triIndex];
+            int vertIndex1 = triangles[triIndex + 1];
+            int vertIndex2 = triangles[triIndex + 2];
+
+            Vector3 v0 = transform.TransformPoint(vertices[vertIndex0]);
+            Vector3 v1 = transform.TransformPoint(vertices[vertIndex1]);
+            Vector3 v2 = transform.TransformPoint(vertices[vertIndex2]);
+
+            // *** MODIFIED ***: Generate barycentric coordinates here to reuse them for UV interpolation.
+            float u = Random.value;
+            float v = Random.value;
+            if (u + v > 1f) { u = 1f - u; v = 1f - v; }
+            Vector3 sample = v0 + u * (v1 - v0) + v * (v2 - v0);
 
             if (roomBounds.Contains(sample))
             {
-                sampledPoints.Add(sample);
-                labels.Add(objectName);
+                // *** NEW ***: Logic to calculate the color at the sampled point.
+                Color32 pointColor = Color.white; // Default color
+                if (texture != null && uvs.Length > 0)
+                {
+                    Vector2 uv0 = uvs[vertIndex0];
+                    Vector2 uv1 = uvs[vertIndex1];
+                    Vector2 uv2 = uvs[vertIndex2];
+                    
+                    // Interpolate UV coordinates using the same barycentric coordinates
+                    Vector2 interpolatedUV = uv0 + u * (uv1 - uv0) + v * (uv2 - uv0);
+                    
+                    // Get the color from the texture
+                    pointColor = texture.GetPixelBilinear(interpolatedUV.x, interpolatedUV.y);
+                }
+
+                // *** MODIFIED ***: Add the complete SampledPoint data to the list.
+                sampledPoints.Add(new SampledPoint
+                {
+                    position = sample,
+                    color = pointColor,
+                    label = objectName
+                });
             }
         }
     }
@@ -148,15 +203,9 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return defaultPointsPerUnitArea;
     }
 
-    Vector3 SamplePointOnTriangle(Vector3 v0, Vector3 v1, Vector3 v2)
-    {
-        float u = Random.value;
-        float v = Random.value;
-        if (u + v > 1f) { u = 1f - u; v = 1f - v; }
-        return v0 + u * (v1 - v0) + v * (v2 - v0);
-    }
+    // This method is no longer needed as its logic was moved into SampleMeshPointsUniform
+    // Vector3 SamplePointOnTriangle(Vector3 v0, Vector3 v1, Vector3 v2) { ... }
 
-    // *** MODIFIED METHOD ***
     Bounds CalculateRoomBounds(string keyword)
     {
         Bounds bounds = new Bounds();
@@ -177,28 +226,20 @@ public class DynamicSurfaceSampler : MonoBehaviour
         
         Debug.Log($"--- Checking for room bounds using keyword: '{keyword}' ---");
 
-        // *** Loop through MeshFilters with a null check
         foreach (var mf in FindObjectsOfType<MeshFilter>())
         {
             bool hasMesh = mf.sharedMesh != null;
             bool nameMatches = mf.name.ToLower().Contains(keyword.ToLower());
-            // *** NEW: Added a detailed log to help diagnose the issue.
-            // Debug.Log($"Checking MeshFilter on '{mf.name}': Name matches = {nameMatches}, Has mesh = {hasMesh}");
-
             if (nameMatches && hasMesh)
             {
                 foreach (var v in mf.sharedMesh.vertices) encapsulate(mf.transform.TransformPoint(v));
             }
         }
         
-        // *** Loop through SkinnedMeshRenderers with a null check
         foreach (var smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
             bool hasMesh = smr.sharedMesh != null;
             bool nameMatches = smr.name.ToLower().Contains(keyword.ToLower());
-            // *** NEW: Added a detailed log to help diagnose the issue.
-            // Debug.Log($"Checking SkinnedMeshRenderer on '{smr.name}': Name matches = {nameMatches}, Has mesh = {hasMesh}");
-
             if (nameMatches && hasMesh)
             {
                 foreach (var v in smr.sharedMesh.vertices) encapsulate(smr.transform.TransformPoint(v));
@@ -207,7 +248,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         if (!initialized)
         {
-            // Fallback if no room object is found at all
             Debug.LogWarning($"Could not find any 'room' objects with meshes to calculate bounds. Using a large default bound.");
             bounds = new Bounds(Vector3.zero, new Vector3(1000, 1000, 1000));
         }
@@ -219,7 +259,8 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return bounds;
     }
     
-    void SaveFrameToPCD(List<Vector3> points, List<string> labels, int frameIndex, string outputSubFolder)
+    // *** MODIFIED ***: Saves the new format with RGB and label data.
+    void SaveFrameToPCD(List<SampledPoint> points, int frameIndex, string outputSubFolder)
     {
         string finalDirectory = Path.Combine(baseOutputDirectory, outputSubFolder);
 
@@ -233,10 +274,11 @@ public class DynamicSurfaceSampler : MonoBehaviour
         {
             writer.WriteLine("# .PCD v0.7 - Point Cloud Data file format");
             writer.WriteLine("VERSION 0.7");
-            writer.WriteLine("FIELDS x y z label");
-            writer.WriteLine("SIZE 4 4 4 1");
-            writer.WriteLine("TYPE F F F S");
-            writer.WriteLine("COUNT 1 1 1 1");
+            // *** MODIFIED ***: Added rgb and changed label type
+            writer.WriteLine("FIELDS x y z rgb label"); 
+            writer.WriteLine("SIZE 4 4 4 4 4"); // Size of float, float, float, uint32, uint32 (for label ID)
+            writer.WriteLine("TYPE F F F U U"); // F=float, U=unsigned int
+            writer.WriteLine("COUNT 1 1 1 1 1");
             writer.WriteLine($"WIDTH {points.Count}");
             writer.WriteLine("HEIGHT 1");
             writer.WriteLine("VIEWPOINT 0 0 0 1 0 0 0");
@@ -245,8 +287,17 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
             for (int i = 0; i < points.Count; i++)
             {
-                Vector3 p = points[i];
-                writer.WriteLine($"{p.x} {p.y} {p.z} {labels[i]}");
+                SampledPoint sp = points[i];
+                Vector3 p = sp.position;
+                Color32 c = sp.color;
+
+                // *** NEW ***: Pack R, G, B into a single 32-bit integer.
+                uint rgb = ((uint)c.r << 16) | ((uint)c.g << 8) | ((uint)c.b);
+                
+                // *** NEW ***: Use the hashcode of the label string as a numeric ID.
+                uint labelId = (uint)sp.label.GetHashCode();
+
+                writer.WriteLine($"{p.x} {p.y} {p.z} {rgb} {labelId}");
             }
         }
     }
