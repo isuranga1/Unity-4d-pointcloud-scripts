@@ -1,1 +1,4 @@
 *.cs.meta
+*.meta
+Scans_metadata
+Scans_V2_metadata

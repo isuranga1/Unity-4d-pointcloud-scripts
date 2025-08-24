@@ -35,6 +35,11 @@
             z-index: 1001;
             display: flex;
             flex-direction: column;
+            transition: transform 0.3s ease;
+        }
+
+        #sidebar.hidden {
+            transform: translateX(-100%);
         }
 
         #main-content {
@@ -42,13 +47,13 @@
             position: relative;
             display: flex;
             flex-direction: column;
-            overflow: hidden; /* Prevent content from spilling out */
+            overflow: hidden;
         }
 
         #viewer-container {
-            flex: 1; /* Allows the viewer to grow and shrink */
+            flex: 1;
             position: relative;
-            min-height: 150px; /* Minimum height for the 3D viewer */
+            min-height: 150px;
         }
 
         #resizer {
@@ -56,7 +61,7 @@
             background: #333;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            cursor: ns-resize; /* Vertical resize cursor */
+            cursor: ns-resize;
             flex-shrink: 0;
             transition: background 0.2s;
         }
@@ -66,17 +71,22 @@
         }
 
         #video-container {
-            height: 200px; /* Initial height */
-            min-height: 50px; /* Minimum resizable height */
+            height: 200px;
+            min-height: 50px;
             background: rgba(0, 0, 0, 0.8);
             border-top: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 10px;
-            flex-shrink: 0; /* Prevent the container from shrinking */
+            flex-shrink: 0;
             position: relative;
             overflow: hidden;
+            transition: transform 0.3s ease;
+        }
+
+        #video-container.hidden {
+            transform: translateY(100%);
         }
 
         #canvas-container {
@@ -95,6 +105,12 @@
             height: 100%;
             pointer-events: none;
             z-index: 1000;
+            transition: opacity 0.3s ease;
+        }
+
+        #ui-overlay.panels-hidden {
+            opacity: 0;
+            pointer-events: none;
         }
         
         #focus-hint {
@@ -184,7 +200,7 @@
         .tree-item-description {
             font-size: 12px;
             color: rgba(255, 255, 255, 0.6);
-            padding: 2px 8px 8px 44px; /* Align with tree item text */
+            padding: 2px 8px 8px 44px;
             font-style: italic;
             white-space: normal;
             line-height: 1.4;
@@ -256,6 +272,40 @@
             min-width: 200px;
         }
 
+        /* Toggle Buttons for hiding panels */
+        #panel-toggles {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 2000;
+            pointer-events: auto;
+        }
+
+        .toggle-button {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+            backdrop-filter: blur(10px);
+        }
+
+        .toggle-button:hover {
+            background: rgba(64, 150, 255, 0.3);
+            border-color: rgba(64, 150, 255, 0.5);
+        }
+
+        .toggle-button.active {
+            background: rgba(64, 150, 255, 0.2);
+            border-color: rgba(64, 150, 255, 0.4);
+        }
+
         .control-button {
             background: rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -268,6 +318,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            margin-top: 8px;
         }
 
         .control-button:hover {
@@ -427,6 +478,49 @@
             min-width: 40px;
             text-align: right;
         }
+
+        /* Keyboard shortcut hint */
+        .shortcut-hint {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+            pointer-events: none;
+            border: 1px solid rgba(255,255,255,0.1);
+            line-height: 1.4;
+        }
+        
+        /* New Styles for Background and Focus Controls */
+        .setting-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .color-swatches {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .color-swatch {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .color-swatch:hover {
+            transform: scale(1.1);
+        }
+        .color-swatch.active {
+            border-color: #4096ff;
+            transform: scale(1.1);
+        }
     </style>
 </head>
 <body>
@@ -456,6 +550,13 @@
                 <div id="loading" class="loading hidden">
                     <div class="loading-spinner"></div>
                     <div>Loading Point Cloud Data...</div>
+                </div>
+
+                <div id="panel-toggles">
+                    <div class="toggle-button active" id="toggle-sidebar">📂 Sidebar</div>
+                    <div class="toggle-button active" id="toggle-panels">🎛️ Panels</div>
+                    <div class="toggle-button active" id="toggle-video">🎥 Video</div>
+                    <div class="toggle-button" id="toggle-fullscreen">🖥️ Fullscreen</div>
                 </div>
 
                 <div id="ui-overlay">
@@ -499,9 +600,20 @@
                             <input type="range" class="slider" id="fps-control" min="1" max="60" step="1" value="10">
                             <span class="point-size-value" id="fps-value">10</span>
                         </div>
+
+                        <div class="setting-row">
+                            <span class="slider-label">Background:</span>
+                            <div class="color-swatches">
+                                <button class="color-swatch" data-color="0x000000" style="background-color: #000;"></button>
+                                <button class="color-swatch active" data-color="0x0a0a0a" style="background-color: #0a0a0a; border: 1px solid #555;"></button>
+                                <button class="color-swatch" data-color="0xffffff" style="background-color: #fff;"></button>
+                            </div>
+                        </div>
+
                         <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
                         <div class="control-button" id="toggle-stats">📊 Stats</div>
                         <div class="control-button" id="use-label-colors">🎨 Label Colors</div>
+                        <div class="control-button active" id="toggle-focus-point">🎯 Focus Point</div>
                     </div>
 
                     <div id="controls-panel" class="ui-panel">
@@ -529,6 +641,10 @@
                         <b>C</b> + Click to set focus point <br>
                         <b>Right-Click</b> + Drag to pan
                     </div>
+                </div>
+
+                <div class="shortcut-hint">
+                    <b>H</b> - Toggle panels | <b>S</b> - Toggle sidebar | <b>V</b> - Toggle video | <b>F</b> - Fullscreen
                 </div>
             </div>
             
@@ -578,10 +694,16 @@
                 // Camera target properties
                 this.cameraTarget = new THREE.Vector3(0, 0, 0);
                 this.targetIndicator = null;
+                this.showFocusPoint = true; // New property to control focus point visibility
                 this.isCKeyDown = false;
                 
                 // Panning state
                 this.isPanning = false;
+
+                // Panel visibility states
+                this.sidebarVisible = true;
+                this.panelsVisible = true;
+                this.videoVisible = true;
                 
                 this.init();
                 this.setupControls();
@@ -610,17 +732,23 @@
                 const axesHelper = new THREE.AxesHelper(2);
                 this.scene.add(axesHelper);
 
-                // Initialize and add target indicator
                 const indicatorGeom = new THREE.SphereGeometry(0.05, 16, 16);
                 const indicatorMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true });
                 this.targetIndicator = new THREE.Mesh(indicatorGeom, indicatorMat);
                 this.targetIndicator.position.copy(this.cameraTarget);
+                this.targetIndicator.visible = this.showFocusPoint; // Set initial visibility
                 this.scene.add(this.targetIndicator);
 
                 this.scene.add(this.wireframeGroup);
                 this.wireframeGroup.visible = this.showWireframe;
 
                 document.getElementById('loading').classList.add('hidden');
+            }
+
+            setBackgroundColor(color) {
+                const bgColor = new THREE.Color(parseInt(color));
+                this.scene.background = bgColor;
+                this.renderer.setClearColor(bgColor, 1);
             }
 
             updateCameraAspect() {
@@ -637,8 +765,75 @@
                     'SMPL': [1.0, 0.2, 0.2], 'character': [1.0, 0.4, 0.0], 'person': [1.0, 0.0, 0.8], 'human': [0.8, 0.0, 1.0],
                     'Floor': [0.7, 0.7, 0.7], 'floor': [0.6, 0.6, 0.6], 'Ceiling': [0.9, 0.9, 0.9], 'ceiling': [0.8, 0.8, 0.8],
                     'wall': [0.5, 0.5, 0.7], 'Wall': [0.4, 0.4, 0.6], 'chair': [0.6, 0.4, 0.2], 'table': [0.8, 0.6, 0.3],
-                    'box': [0.3, 0.6, 0.3], 'furniture': [0.5, 0.3, 0.1], 'default': [0.8, 0.8, 0.8]
+                    'box': [0.3, 0.6, 0.3], 'furniture': [0.5, 0.3, 0.1], 'default': [0.8, 0.8, 0.8], 'f_avg':[0,0,0]
                 };
+            }
+
+            toggleSidebar() {
+                this.sidebarVisible = !this.sidebarVisible;
+                const sidebar = document.getElementById('sidebar');
+                const toggleBtn = document.getElementById('toggle-sidebar');
+                
+                if (this.sidebarVisible) {
+                    sidebar.classList.remove('hidden');
+                    toggleBtn.classList.add('active');
+                } else {
+                    sidebar.classList.add('hidden');
+                    toggleBtn.classList.remove('active');
+                }
+            }
+
+            togglePanels() {
+                this.panelsVisible = !this.panelsVisible;
+                const overlay = document.getElementById('ui-overlay');
+                const toggleBtn = document.getElementById('toggle-panels');
+                
+                if (this.panelsVisible) {
+                    overlay.classList.remove('panels-hidden');
+                    toggleBtn.classList.add('active');
+                } else {
+                    overlay.classList.add('panels-hidden');
+                    toggleBtn.classList.remove('active');
+                }
+            }
+
+            toggleVideo() {
+                this.videoVisible = !this.videoVisible;
+                const videoContainer = document.getElementById('video-container');
+                const resizer = document.getElementById('resizer');
+                const toggleBtn = document.getElementById('toggle-video');
+                
+                if (this.videoVisible) {
+                    videoContainer.classList.remove('hidden');
+                    resizer.style.display = 'block';
+                    toggleBtn.classList.add('active');
+                } else {
+                    videoContainer.classList.add('hidden');
+                    resizer.style.display = 'none';
+                    toggleBtn.classList.remove('active');
+                }
+                
+                setTimeout(() => this.updateCameraAspect(), 300);
+            }
+
+            toggleFullscreen() {
+                const toggleBtn = document.getElementById('toggle-fullscreen');
+                
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().then(() => {
+                        toggleBtn.classList.add('active');
+                        toggleBtn.innerHTML = '🖼️ Exit Fullscreen';
+                    }).catch(err => {
+                        console.log('Error entering fullscreen:', err);
+                    });
+                } else {
+                    document.exitFullscreen().then(() => {
+                        toggleBtn.classList.remove('active');
+                        toggleBtn.innerHTML = '🖥️ Fullscreen';
+                    }).catch(err => {
+                        console.log('Error exiting fullscreen:', err);
+                    });
+                }
             }
 
             async buildDatasetStructure(files) {
@@ -764,9 +959,7 @@
                 
                 this.loadVideo(sceneData.videoFile);
                 if (this.frames.length > 0) {
-                    // This will display the first frame, which is needed for resetView to work correctly
                     this.seekToFrame(0);
-                    // This will now center on the newly displayed point cloud
                     this.resetView(); 
                 }
                 
@@ -816,21 +1009,17 @@
             setupControls() {
                 const canvas = this.renderer.domElement;
 
-                // Prevent the default context menu on right-click
                 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
-                // Handle left and right mouse buttons
                 canvas.addEventListener('mousedown', (event) => {
-                    // event.button === 0 is left, 1 is middle, 2 is right
                     if (event.button === 0) {
-                        this.mouseDown = true; // For rotation
+                        this.mouseDown = true;
                     } else if (event.button === 2) {
-                        this.isPanning = true; // For panning
+                        this.isPanning = true;
                     }
                     this.previousMousePosition.set(event.clientX, event.clientY);
                 });
 
-                // Handle left and right mouse buttons
                 canvas.addEventListener('mouseup', (event) => {
                     if (event.button === 0) {
                         this.mouseDown = false;
@@ -839,9 +1028,8 @@
                     }
                 });
                 
-                // Handle panning (right-click drag) and rotation (left-click drag)
                 canvas.addEventListener('mousemove', (event) => {
-                    if (!this.mouseDown && !this.isPanning) return; // Exit if no button is pressed
+                    if (!this.mouseDown && !this.isPanning) return;
 
                     const deltaMove = new THREE.Vector2(
                         event.clientX - this.previousMousePosition.x,
@@ -849,7 +1037,6 @@
                     );
 
                     if (this.isPanning) {
-                        // --- Panning Logic ---
                         const panSpeedFactor = 0.002;
                         const distance = this.camera.position.distanceTo(this.cameraTarget);
                         const effectivePanSpeed = distance * panSpeedFactor;
@@ -866,7 +1053,6 @@
                         this.targetIndicator.position.copy(this.cameraTarget);
 
                     } else if (this.mouseDown) { 
-                        // --- Rotation Logic (Existing) ---
                         const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
                         const spherical = new THREE.Spherical().setFromVector3(cameraOffset);
                         
@@ -890,7 +1076,6 @@
                     this.camera.position.copy(this.cameraTarget).add(cameraOffset);
                 });
 
-                // Logic for setting camera target with 'C' key + Click
                 window.addEventListener('keydown', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = true; });
                 window.addEventListener('keyup', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = false; });
 
@@ -929,6 +1114,11 @@
                     document.addEventListener('mouseup', onUp);
                 });
 
+                // Panel toggle controls
+                document.getElementById('toggle-sidebar').addEventListener('click', () => this.toggleSidebar());
+                document.getElementById('toggle-panels').addEventListener('click', () => this.togglePanels());
+                document.getElementById('toggle-video').addEventListener('click', () => this.toggleVideo());
+                document.getElementById('toggle-fullscreen').addEventListener('click', () => this.toggleFullscreen());
 
                 // UI Controls
                 document.getElementById('play-pause').addEventListener('click', () => this.togglePlayback());
@@ -973,15 +1163,64 @@
                     if (this.frames.length > 0) this.displayFrame(this.currentFrame);
                 });
 
+                // New: Toggle focus point visibility
+                document.getElementById('toggle-focus-point').addEventListener('click', (e) => {
+                    this.showFocusPoint = !this.showFocusPoint;
+                    if (this.targetIndicator) {
+                        this.targetIndicator.visible = this.showFocusPoint;
+                    }
+                    e.currentTarget.classList.toggle('active', this.showFocusPoint);
+                });
+
+                // New: Background color switcher
+                document.querySelectorAll('.color-swatch').forEach(swatch => {
+                    swatch.addEventListener('click', (e) => {
+                        const currentActive = document.querySelector('.color-swatch.active');
+                        if (currentActive) currentActive.classList.remove('active');
+                        
+                        const target = e.currentTarget;
+                        target.classList.add('active');
+                        this.setBackgroundColor(target.dataset.color);
+                    });
+                });
+
+
                 document.getElementById('folder-upload').addEventListener('change', async (e) => await this.loadDataset(e.target.files));
 
                 document.addEventListener('keydown', (e) => {
                     if (e.target.tagName === 'INPUT' || this.isCKeyDown) return;
-                    const keyMap = { 'Space': () => this.togglePlayback(), 'ArrowLeft': () => this.previousFrame(), 'ArrowRight': () => this.nextFrame(), 'KeyR': () => this.resetView() };
-                    if (keyMap[e.code]) { e.preventDefault(); keyMap[e.code](); }
+                    
+                    const keyMap = { 
+                        'Space': () => this.togglePlayback(), 
+                        'ArrowLeft': () => this.previousFrame(), 
+                        'ArrowRight': () => this.nextFrame(), 
+                        'KeyR': () => this.resetView(),
+                        'KeyH': () => this.togglePanels(),
+                        'KeyS': () => this.toggleSidebar(),
+                        'KeyV': () => this.toggleVideo(),
+                        'KeyF': () => this.toggleFullscreen()
+                    };
+                    
+                    if (keyMap[e.code]) { 
+                        e.preventDefault(); 
+                        keyMap[e.code](); 
+                    }
                 });
 
                 window.addEventListener('resize', () => this.updateCameraAspect());
+
+                // Handle fullscreen change events
+                document.addEventListener('fullscreenchange', () => {
+                    const toggleBtn = document.getElementById('toggle-fullscreen');
+                    if (document.fullscreenElement) {
+                        toggleBtn.classList.add('active');
+                        toggleBtn.innerHTML = '🖼️ Exit Fullscreen';
+                    } else {
+                        toggleBtn.classList.remove('active');
+                        toggleBtn.innerHTML = '🖥️ Fullscreen';
+                    }
+                    setTimeout(() => this.updateCameraAspect(), 100);
+                });
             }
 
             async loadDataset(files) {
@@ -1266,40 +1505,33 @@
                 }
             }
 
-            // MODIFIED: This function now intelligently centers on the point cloud.
             resetView() {
                 if (this.points && this.points.geometry) {
-                    // 1. Calculate the center of the current point cloud
                     const boundingBox = new THREE.Box3().setFromBufferAttribute(this.points.geometry.attributes.position);
                     
                     if (!boundingBox.isEmpty()) {
                         boundingBox.getCenter(this.cameraTarget);
 
-                        // 2. Calculate a sensible camera distance based on the cloud's size
                         const size = new THREE.Vector3();
                         boundingBox.getSize(size);
                         const maxDim = Math.max(size.x, size.y, size.z);
-                        const distance = maxDim * 1.5; // Adjust this multiplier as needed
+                        const distance = maxDim * 1.5;
 
-                        // 3. Position the camera to frame the object
                         const newPosition = this.cameraTarget.clone();
                         newPosition.z += distance;
-                        newPosition.y += distance * 0.5; // Add some height for a better angle
+                        newPosition.y += distance * 0.5;
                         this.camera.position.copy(newPosition);
 
                     } else {
-                        // Fallback for empty point clouds
                         this.cameraTarget.set(0, 0, 0);
                         this.camera.position.set(5, 5, 5);
                     }
                     
                 } else {
-                    // Fallback if no point cloud is loaded
                     this.cameraTarget.set(0, 0, 0);
                     this.camera.position.set(5, 5, 5);
                 }
                 
-                // 4. Update the visual indicator and point the camera at the new target
                 this.targetIndicator.position.copy(this.cameraTarget);
                 this.camera.lookAt(this.cameraTarget);
             }
