@@ -27,7 +27,7 @@
         }
 
         #sidebar {
-            width: 300px;
+            width: 350px;
             background: rgba(0, 0, 0, 0.9);
             backdrop-filter: blur(10px);
             border-right: 1px solid rgba(255, 255, 255, 0.1);
@@ -610,7 +610,6 @@
                             </div>
                         </div>
                         
-                        <!-- *** MODIFIED ***: This button now cycles through all color modes. -->
                         <div class="control-button" id="toggle-color-mode">🎨 View: Label</div>
                         <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
                         <div class="control-button" id="toggle-stats">📊 Stats</div>
@@ -672,7 +671,7 @@
             
             this.points = null;
             this.staticPoints = null;
-            this.staticFrameData = null; // To store parsed static data for color updates
+            this.staticFrameData = null;
             this.frames = [];
             this.currentFrame = 0;
             this.isPlaying = false;
@@ -680,8 +679,7 @@
             this.speed = 1.0;
             this.frameInterval = null;
             
-            // *** NEW ***: State for color mode now includes 'rgb' and 'normal'
-            this.colorMode = 'label'; // Can be 'label', 'rgb', or 'normal'
+            this.colorMode = 'label'; // 'label', 'rgb', or 'normal'
             
             this.mouse = new THREE.Vector2();
             this.mouseDown = false;
@@ -767,7 +765,7 @@
                 'SMPL': [1.0, 0.2, 0.2], 'character': [1.0, 0.4, 0.0], 'person': [1.0, 0.0, 0.8], 'human': [0.8, 0.0, 1.0],
                 'Floor': [0.7, 0.7, 0.7], 'floor': [0.6, 0.6, 0.6], 'Ceiling': [0.9, 0.9, 0.9], 'ceiling': [0.8, 0.8, 0.8],
                 'wall': [0.5, 0.5, 0.7], 'Wall': [0.4, 0.4, 0.6], 'chair': [0.6, 0.4, 0.2], 'table': [0.8, 0.6, 0.3],
-                'box': [0.3, 0.6, 0.3], 'furniture': [0.5, 0.3, 0.1], 'default': [0.8, 0.8, 0.8], 'f_avg':[0,0,0]
+                'box': [0.3, 0.6, 0.3], 'furniture': [0.5, 0.3, 0.1], 'default': [0.8, 0.8, 0.8], 'f_avg':[0,0,0], 'Scene': [0.8, 0.8, 0.8]
             };
         }
 
@@ -803,27 +801,31 @@
             const structure = {};
             for (const file of Array.from(files)) {
                 const pathParts = file.webkitRelativePath.split('/');
-                if (pathParts.length !== 5) continue;
+                // Path structure: Dataroot/Room/Scene/Seed/Subfolder/Filename
+                if (pathParts.length !== 6) continue;
                 
-                const [, room, scene, subfolder, filename] = pathParts;
+                const [, room, scene, seed, subfolder, filename] = pathParts;
 
                 if (!structure[room]) structure[room] = {};
-                if (!structure[room][scene]) {
-                    structure[room][scene] = { prompts: {}, staticCloudFile: null };
+                if (!structure[room][scene]) structure[room][scene] = {};
+                if (!structure[room][scene][seed]) {
+                    structure[room][scene][seed] = { prompts: {}, staticCloudFile: null };
                 }
+
+                const seedData = structure[room][scene][seed];
 
                 if (subfolder.toLowerCase() === 'scene_point_cloud') {
                     if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) {
-                        structure[room][scene].staticCloudFile = file;
+                        seedData.staticCloudFile = file;
                     }
                 } else if (subfolder.startsWith('prompt_')) {
                     const promptName = subfolder;
-                    if (!structure[room][scene].prompts[promptName]) {
-                        structure[room][scene].prompts[promptName] = { 
+                    if (!seedData.prompts[promptName]) {
+                        seedData.prompts[promptName] = { 
                             pointCloudFiles: [], videoFile: null, descriptionFile: null, description: null 
                         };
                     }
-                    const promptData = structure[room][scene].prompts[promptName];
+                    const promptData = seedData.prompts[promptName];
                     if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) {
                         promptData.pointCloudFiles.push(file);
                     } else if (filename.toLowerCase().endsWith('.mp4')) {
@@ -835,18 +837,21 @@
             }
             for (const room in structure) {
                 for (const scene in structure[room]) {
-                    for (const prompt in structure[room][scene].prompts) {
-                        const promptData = structure[room][scene].prompts[prompt];
-                        if (promptData.descriptionFile) {
-                            try {
-                                const jsonContent = await promptData.descriptionFile.text();
-                                promptData.description = JSON.parse(jsonContent).description || null;
-                            } catch (e) {
-                                console.error(`Error parsing JSON for prompt ${prompt}:`, e);
-                                promptData.description = "Error reading description.";
+                    for (const seed in structure[room][scene]) {
+                        const seedData = structure[room][scene][seed];
+                        for (const prompt in seedData.prompts) {
+                            const promptData = seedData.prompts[prompt];
+                            if (promptData.descriptionFile) {
+                                try {
+                                    const jsonContent = await promptData.descriptionFile.text();
+                                    promptData.description = JSON.parse(jsonContent).description || null;
+                                } catch (e) {
+                                    console.error(`Error parsing JSON for prompt ${prompt}:`, e);
+                                    promptData.description = "Error reading description.";
+                                }
                             }
+                            promptData.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                         }
-                        promptData.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                     }
                 }
             }
@@ -862,21 +867,29 @@
                 const roomChildren = document.createElement('div');
                 roomChildren.className = 'tree-children';
                 
-                for (const [sceneName, sceneData] of Object.entries(room)) {
+                for (const [sceneName, scene] of Object.entries(room)) {
                     const sceneNode = this.createTreeNode(sceneName, 'folder', '🎬', [roomName, sceneName]);
                     roomChildren.appendChild(sceneNode);
                     const sceneChildren = document.createElement('div');
                     sceneChildren.className = 'tree-children';
 
-                    for (const [promptName, promptData] of Object.entries(sceneData.prompts)) {
-                        const promptNode = this.createTreeNode(
-                            `${promptName} (${promptData.pointCloudFiles.length} frames)`, 
-                            'scene',
-                            promptData.videoFile ? '🎥' : '📊',
-                            [roomName, sceneName, promptName],
-                            promptData.description
-                        );
-                        sceneChildren.appendChild(promptNode);
+                    for (const [seedName, seedData] of Object.entries(scene)) {
+                        const seedNode = this.createTreeNode(seedName, 'folder', '🌱', [roomName, sceneName, seedName]);
+                        sceneChildren.appendChild(seedNode);
+                        const seedChildren = document.createElement('div');
+                        seedChildren.className = 'tree-children';
+
+                        for (const [promptName, promptData] of Object.entries(seedData.prompts)) {
+                            const promptNode = this.createTreeNode(
+                                `${promptName} (${promptData.pointCloudFiles.length} frames)`, 
+                                'scene',
+                                promptData.videoFile ? '🎥' : '📊',
+                                [roomName, sceneName, seedName, promptName],
+                                promptData.description
+                            );
+                            seedChildren.appendChild(promptNode);
+                        }
+                        seedNode.appendChild(seedChildren);
                     }
                     sceneNode.appendChild(sceneChildren);
                 }
@@ -910,17 +923,17 @@
             const icon = item.querySelector('.tree-icon');
             if(icon) {
                  icon.textContent = item.classList.contains('collapsed') 
-                    ? icon.textContent.replace('📁', '📂').replace('🎬', '🎞️')
-                    : icon.textContent.replace('📂', '📁').replace('🎞️', '🎬');
+                    ? icon.textContent.replace('📁', '📂').replace('🎬', '🎞️').replace('🌱', '🌿')
+                    : icon.textContent.replace('📂', '📁').replace('🎞️', '🎬').replace('🌿', '🌱');
             }
         }
 
         async loadScene(path) {
-            const [room, scene, prompt] = path;
-            const sceneData = this.datasetStructure[room][scene];
-            const promptData = sceneData.prompts[prompt];
+            const [room, scene, seed, prompt] = path;
+            const seedData = this.datasetStructure[room][scene][seed];
+            const promptData = seedData.prompts[prompt];
 
-            if (!promptData && !sceneData.staticCloudFile) return;
+            if (!promptData && !seedData.staticCloudFile) return;
             
             document.getElementById('loading').classList.remove('hidden');
             
@@ -930,12 +943,12 @@
             if (this.staticPoints) this.scene.remove(this.staticPoints);
             while(this.wireframeGroup.children.length > 0) this.wireframeGroup.remove(this.wireframeGroup.children[0]);
 
-            this.currentScene = { room, scene, prompt };
+            this.currentScene = { room, scene, seed, prompt };
             this.updateBreadcrumb(path);
             
-            if (sceneData.staticCloudFile) {
+            if (seedData.staticCloudFile) {
                 try {
-                    this.staticFrameData = await this.parseFile(sceneData.staticCloudFile);
+                    this.staticFrameData = await this.parseFile(seedData.staticCloudFile);
                     if (this.staticFrameData?.pointCount > 0) {
                         const geometry = new THREE.BufferGeometry();
                         geometry.setAttribute('position', new THREE.BufferAttribute(this.staticFrameData.positions, 3));
@@ -1005,7 +1018,9 @@
 
         updateSelectedTreeItem(path) {
             document.querySelectorAll('.tree-item.selected').forEach(item => item.classList.remove('selected'));
-            const [, , promptNameFromPath] = path;
+            const promptNameFromPath = path[3];
+            if (!promptNameFromPath) return;
+
             document.querySelectorAll('.tree-item.scene').forEach(item => {
                 if (item.textContent.trim().startsWith(promptNameFromPath)) {
                     item.classList.add('selected');
@@ -1014,7 +1029,6 @@
         }
 
         setupControls() {
-            // ... (No changes to camera controls, keeping your implementation)
             const canvas = this.renderer.domElement;
             canvas.addEventListener('contextmenu', e => e.preventDefault());
             canvas.addEventListener('mousedown', e => {
@@ -1069,7 +1083,6 @@
                 }
             });
 
-            // ... (No changes to resizer logic)
             document.getElementById('resizer').addEventListener('mousedown', e => {
                 e.preventDefault();
                 const vCont = document.getElementById('video-container'), mCont = document.getElementById('main-content');
@@ -1118,7 +1131,6 @@
                 e.currentTarget.classList.toggle('active', this.showWireframe);
             });
             
-            // *** MODIFIED ***: Event listener for the color mode toggle now cycles through three states.
             document.getElementById('toggle-color-mode').addEventListener('click', e => {
                 const button = e.currentTarget;
                 if (this.colorMode === 'label') {
@@ -1127,7 +1139,7 @@
                 } else if (this.colorMode === 'rgb') {
                     this.colorMode = 'normal';
                     button.innerHTML = '🌐 View: Normal';
-                } else { // was 'normal'
+                } else {
                     this.colorMode = 'label';
                     button.innerHTML = '🎨 View: Label';
                 }
@@ -1191,7 +1203,7 @@
                          const [x,y,z] = parts.slice(0,3).map(parseFloat);
                          if (!isNaN(x)) {
                              positions.push(x,y,z);
-                             labels.push(parts.length > 6 ? parts[6] : 'default'); // Assuming label might be further along
+                             labels.push(parts.length > 6 ? parts[6] : 'default');
                          }
                      }
                  }
@@ -1205,7 +1217,7 @@
             const colors = new Float32Array(numPoints * 3);
             colors.fill(1.0); // Default to white
             const normals = new Float32Array(numPoints * 3);
-            for(let i=0; i<numPoints; i++) normals.set([0,1,0], i*3); // Default to up vector
+            for(let i=0; i<numPoints; i++) normals.set([0,1,0], i*3); // Default up
             
             return { 
                 positions: new Float32Array(positions), 
@@ -1336,7 +1348,7 @@
             const pointsByLabel = new Map();
             for (let i = 0; i < frameData.labels.length; i++) {
                 const label = frameData.labels[i];
-                if (['default', 'floor', 'wall', 'ceiling'].some(term => String(label).toLowerCase().includes(term))) continue;
+                if (['default', 'floor', 'wall', 'ceiling', 'scene'].some(term => String(label).toLowerCase().includes(term))) continue;
                 if (!pointsByLabel.has(label)) pointsByLabel.set(label, []);
                 pointsByLabel.get(label).push(new THREE.Vector3().fromArray(frameData.positions, i * 3));
             }
@@ -1360,20 +1372,18 @@
         generateNormalColors(normals) {
             const colors = new Float32Array(normals.length);
             for (let i = 0; i < normals.length; i++) {
-                colors[i] = (normals[i] + 1) / 2; // Map component from [-1, 1] to [0, 1]
+                colors[i] = (normals[i] + 1) / 2;
             }
             return colors;
         }
 
         updatePointColors() {
-            // Update dynamic points
             if (this.points && this.frames.length > 0 && this.frames[this.currentFrame]) {
                 const frameData = this.frames[this.currentFrame];
                 const newColors = this.getColorAttributeForFrame(frameData);
                 this.points.geometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
                 this.points.geometry.attributes.color.needsUpdate = true;
             }
-            // Update static points
             if (this.staticPoints && this.staticFrameData) {
                  const newStaticColors = this.getColorAttributeForFrame(this.staticFrameData);
                  this.staticPoints.geometry.setAttribute('color', new THREE.BufferAttribute(newStaticColors, 3));
@@ -1448,10 +1458,12 @@
         resetView() {
             const combinedBox = new THREE.Box3();
             if (this.staticPoints?.geometry.attributes.position.count > 0) {
-                combinedBox.expandByObject(this.staticPoints);
+                this.staticPoints.geometry.computeBoundingBox();
+                combinedBox.union(this.staticPoints.geometry.boundingBox);
             }
             if (this.points?.geometry.attributes.position.count > 0) {
-                combinedBox.expandByObject(this.points);
+                this.points.geometry.computeBoundingBox();
+                combinedBox.union(this.points.geometry.boundingBox);
             }
 
             if (!combinedBox.isEmpty()) {
@@ -1506,4 +1518,3 @@
 </script>
 </body>
 </html>
-

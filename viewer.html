@@ -225,7 +225,7 @@
             font-weight: 500;
         }
 
-        .tree-item.scene {
+        .tree-item.scene { /* This now represents the 'animation' level */
             color: #52c41a;
         }
 
@@ -562,7 +562,7 @@
                 <div id="ui-overlay">
                     <div id="info-panel" class="ui-panel">
                         <div class="info-row">
-                            <span class="info-label">Scene:</span>
+                            <span class="info-label">Animation:</span>
                             <span class="info-value" id="scene-info">None</span>
                         </div>
                         <div class="info-row">
@@ -655,7 +655,7 @@
                     Your browser does not support the video tag.
                 </video>
                 <div id="video-placeholder" class="video-placeholder">
-                    Select a scene to view associated video
+                    Select an animation to view associated video
                 </div>
             </div>
         </div>
@@ -677,7 +677,6 @@
                 this.speed = 1.0;
                 this.frameInterval = null;
                 
-                // *** MODIFIED ***: State for color mode now includes 'normal'
                 this.colorMode = 'label'; // Can be 'label', 'rgb', or 'normal'
                 
                 this.mouse = new THREE.Vector2();
@@ -688,21 +687,18 @@
                 
                 this.datasetStructure = {};
                 this.currentPath = [];
-                this.currentScene = null;
+                this.currentAnimation = null;
 
                 this.wireframeGroup = new THREE.Group();
                 this.showWireframe = false;
                 
-                // Camera target properties
                 this.cameraTarget = new THREE.Vector3(0, 0, 0);
                 this.targetIndicator = null;
                 this.showFocusPoint = true; 
                 this.isCKeyDown = false;
                 
-                // Panning state
                 this.isPanning = false;
 
-                // Panel visibility states
                 this.sidebarVisible = true;
                 this.panelsVisible = true;
                 this.videoVisible = true;
@@ -805,38 +801,50 @@
                     document.exitFullscreen().catch(err => console.error('Error exiting fullscreen:', err));
                 }
             }
-
+            
             async buildDatasetStructure(files) {
                 const structure = {};
                 for (const file of Array.from(files)) {
                     const pathParts = file.webkitRelativePath.split('/');
-                    if (pathParts.length < 5) continue;
+                    if (pathParts.length < 6) continue;
                     
-                    const [, room, prompt, scene, filename] = pathParts;
-                    const sceneData = (structure[room] ??= {})[prompt] ??= {};
-                    if (!sceneData[scene]) {
-                        sceneData[scene] = { pointCloudFiles: [], videoFile: null, descriptionFile: null, description: null };
+                    const [, roomType, roomInstance, sceneFolder, animationName, filename] = pathParts;
+                    
+                    // This is a more robust way to create the nested structure
+                    let level1 = (structure[roomType] ??= {});
+                    let level2 = (level1[roomInstance] ??= {});
+                    let level3 = (level2[sceneFolder] ??= {});
+
+                    if (!level3[animationName]) {
+                        level3[animationName] = { 
+                            pointCloudFiles: [], 
+                            videoFile: null, 
+                            descriptionFile: null, 
+                            description: null 
+                        };
                     }
                     
-                    const currentScene = sceneData[scene];
-                    if (/\.(ply|xyz|pcd|txt)$/i.test(filename)) currentScene.pointCloudFiles.push(file);
-                    else if (/\.mp4$/i.test(filename)) currentScene.videoFile = file;
-                    else if (/\.json$/i.test(filename)) currentScene.descriptionFile = file;
+                    const currentAnimation = level3[animationName];
+                    if (/\.(ply|xyz|pcd|txt)$/i.test(filename)) currentAnimation.pointCloudFiles.push(file);
+                    else if (/\.mp4$/i.test(filename)) currentAnimation.videoFile = file;
+                    else if (/report\.json$/i.test(filename)) currentAnimation.descriptionFile = file;
                 }
 
-                for (const room of Object.values(structure)) {
-                    for (const prompt of Object.values(room)) {
-                        for (const scene of Object.values(prompt)) {
-                            if (scene.descriptionFile) {
-                                try {
-                                    const json = JSON.parse(await scene.descriptionFile.text());
-                                    scene.description = json.description || null;
-                                } catch (e) {
-                                    console.error(`Error parsing JSON description:`, e);
-                                    scene.description = "Error reading description.";
+                for (const roomType of Object.values(structure)) {
+                    for (const roomInstance of Object.values(roomType)) {
+                        for (const sceneFolder of Object.values(roomInstance)) {
+                            for (const animation of Object.values(sceneFolder)) {
+                                if (animation.descriptionFile) {
+                                    try {
+                                        const json = JSON.parse(await animation.descriptionFile.text());
+                                        animation.description = json.description || null;
+                                    } catch (e) {
+                                        console.error(`Error parsing JSON description:`, e);
+                                        animation.description = "Error reading description.";
+                                    }
                                 }
+                                animation.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                             }
-                            scene.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                         }
                     }
                 }
@@ -846,26 +854,38 @@
             renderTree() {
                 const container = document.getElementById('tree-container');
                 container.innerHTML = '';
-                for (const [roomName, room] of Object.entries(this.datasetStructure)) {
-                    const roomNode = this.createTreeNode(roomName, 'folder', '📁', [roomName]);
-                    container.appendChild(roomNode);
-                    const roomChildren = document.createElement('div');
-                    roomChildren.className = 'tree-children';
-                    for (const [promptName, prompt] of Object.entries(room)) {
-                        const promptNode = this.createTreeNode(promptName, 'folder', '📋', [roomName, promptName]);
-                        roomChildren.appendChild(promptNode);
-                        const promptChildren = document.createElement('div');
-                        promptChildren.className = 'tree-children';
-                        for (const [sceneName, scene] of Object.entries(prompt)) {
-                            const sceneNode = this.createTreeNode(
-                                `${sceneName} (${scene.pointCloudFiles.length} files)`, 'scene', 
-                                scene.videoFile ? '🎬' : '📊', [roomName, promptName, sceneName], scene.description
-                            );
-                            promptChildren.appendChild(sceneNode);
+                for (const [roomTypeName, roomType] of Object.entries(this.datasetStructure)) {
+                    const roomTypeNode = this.createTreeNode(roomTypeName, 'folder', '📁', [roomTypeName]);
+                    container.appendChild(roomTypeNode);
+                    const roomTypeChildren = document.createElement('div');
+                    roomTypeChildren.className = 'tree-children';
+                    
+                    for (const [roomInstanceName, roomInstance] of Object.entries(roomType)) {
+                        const roomInstanceNode = this.createTreeNode(roomInstanceName, 'folder', '📂', [roomTypeName, roomInstanceName]);
+                        roomTypeChildren.appendChild(roomInstanceNode);
+                        const roomInstanceChildren = document.createElement('div');
+                        roomInstanceChildren.className = 'tree-children';
+
+                        for (const [sceneFolderName, sceneFolder] of Object.entries(roomInstance)) {
+                            const sceneFolderNode = this.createTreeNode(sceneFolderName, 'folder', '📄', [roomTypeName, roomInstanceName, sceneFolderName]);
+                            roomInstanceChildren.appendChild(sceneFolderNode);
+                            const sceneFolderChildren = document.createElement('div');
+                            sceneFolderChildren.className = 'tree-children';
+
+                            for (const [animationName, animation] of Object.entries(sceneFolder)) {
+                                const animationNode = this.createTreeNode(
+                                    `${animationName} (${animation.pointCloudFiles.length} files)`, 'scene',
+                                    animation.videoFile ? '🎬' : '📊', 
+                                    [roomTypeName, roomInstanceName, sceneFolderName, animationName], 
+                                    animation.description
+                                );
+                                sceneFolderChildren.appendChild(animationNode);
+                            }
+                            sceneFolderNode.appendChild(sceneFolderChildren);
                         }
-                        promptNode.appendChild(promptChildren);
+                        roomInstanceNode.appendChild(roomInstanceChildren);
                     }
-                    roomNode.appendChild(roomChildren);
+                    roomTypeNode.appendChild(roomTypeChildren);
                 }
             }
             
@@ -876,7 +896,7 @@
                 item.className = `tree-item ${type}`;
                 item.innerHTML = `<span class="tree-icon">${icon}</span><span>${name}</span>`;
                 if (type === 'scene') {
-                    item.addEventListener('click', () => this.loadScene(path));
+                    item.addEventListener('click', () => this.loadAnimation(path));
                 } else {
                     item.addEventListener('click', () => this.toggleFolder(item));
                 }
@@ -894,31 +914,34 @@
                 item.classList.toggle('collapsed');
                 const icon = item.querySelector('.tree-icon');
                 if (icon) {
-                    icon.textContent = item.classList.contains('collapsed') 
-                        ? icon.textContent.replace('📁', '📂').replace('📋', '📄')
-                        : icon.textContent.replace('📂', '📁').replace('📄', '📋');
+                    const isCollapsed = item.classList.contains('collapsed');
+                    if (icon.textContent === '📁' || icon.textContent === '📂') {
+                        icon.textContent = isCollapsed ? '📂' : '📁';
+                    } else if (icon.textContent === '📄' || icon.textContent === '📋') {
+                        icon.textContent = isCollapsed ? '📄' : '📋';
+                    }
                 }
             }
 
-            async loadScene(path) {
-                const [room, prompt, scene] = path;
-                const sceneData = this.datasetStructure[room][prompt][scene];
-                if (!sceneData || sceneData.pointCloudFiles.length === 0) return;
+            async loadAnimation(path) {
+                const [roomType, roomInstance, sceneFolder, animationName] = path;
+                const animationData = this.datasetStructure[roomType]?.[roomInstance]?.[sceneFolder]?.[animationName];
+                if (!animationData || animationData.pointCloudFiles.length === 0) return;
                 
                 document.getElementById('loading').classList.remove('hidden');
                 this.frames = [];
-                this.currentScene = { room, prompt, scene };
+                this.currentAnimation = { roomType, roomInstance, sceneFolder, animationName };
                 
                 this.updateBreadcrumb(path);
                 
-                this.frames = await Promise.all(sceneData.pointCloudFiles.map(file => this.parseFile(file).catch(error => {
+                this.frames = await Promise.all(animationData.pointCloudFiles.map(file => this.parseFile(file).catch(error => {
                     console.error(`Error loading file ${file.name}:`, error);
                     return null;
                 }))).then(frames => frames.filter(f => f !== null));
                 
                 document.getElementById('loading').classList.add('hidden');
                 
-                this.loadVideo(sceneData.videoFile);
+                this.loadVideo(animationData.videoFile);
                 if (this.frames.length > 0) {
                     this.seekToFrame(0);
                     this.resetView(); 
@@ -946,7 +969,7 @@
                 } else {
                     videoPlayer.classList.add('hidden');
                     videoPlaceholder.classList.remove('hidden');
-                    videoPlaceholder.textContent = 'No video available for this scene';
+                    videoPlaceholder.textContent = 'No video available for this animation';
                 }
             }
 
@@ -956,9 +979,9 @@
 
             updateSelectedTreeItem(path) {
                 document.querySelectorAll('.tree-item.selected').forEach(item => item.classList.remove('selected'));
-                const [,, sceneNameFromPath] = path;
+                const [,,, animationNameFromPath] = path;
                 document.querySelectorAll('.tree-item.scene').forEach(item => {
-                    if (item.textContent.trim().startsWith(sceneNameFromPath)) {
+                    if (item.textContent.trim().startsWith(animationNameFromPath)) {
                         item.classList.add('selected');
                     }
                 });
@@ -1069,7 +1092,6 @@
                     e.currentTarget.classList.toggle('active', this.showWireframe);
                 });
                 
-                // *** MODIFIED ***: Event listener for the color mode toggle now cycles through three states.
                 document.getElementById('toggle-color-mode').addEventListener('click', e => {
                     const button = e.currentTarget;
                     if (this.colorMode === 'label') {
@@ -1078,7 +1100,7 @@
                     } else if (this.colorMode === 'rgb') {
                         this.colorMode = 'normal';
                         button.innerHTML = '🌐 View: Normal';
-                    } else { // was 'normal'
+                    } else {
                         this.colorMode = 'label';
                         button.innerHTML = '🎨 View: Label';
                     }
@@ -1118,7 +1140,7 @@
                 try {
                     this.datasetStructure = await this.buildDatasetStructure(files);
                     this.renderTree();
-                    document.getElementById('breadcrumb').innerHTML = '<span>Dataset loaded - select a scene</span>';
+                    document.getElementById('breadcrumb').innerHTML = '<span>Dataset loaded - select an animation</span>';
                 } catch (error) {
                     console.error('Error loading dataset:', error);
                     document.getElementById('breadcrumb').innerHTML = '<span style="color: #ff4d4f;">Error loading dataset.</span>';
@@ -1131,9 +1153,7 @@
                 const content = await file.text();
                 const ext = file.name.split('.').pop().toLowerCase();
                 if (ext === 'pcd') return this.parsePCD(content);
-                // Simple parsers for other formats if needed
                 if (ext === 'ply' || ext === 'xyz' || ext === 'txt') {
-                    // Fallback parser for non-PCD files, won't have normals/rgb unless you implement it
                     const lines = content.split('\n');
                     let dataStart = 0;
                     if (ext === 'ply') dataStart = lines.findIndex(l => l.trim() === 'end_header') + 1;
@@ -1153,13 +1173,12 @@
                 throw new Error(`Unsupported file format: ${ext}`);
             }
             
-            // *** MODIFIED ***: This helper now creates default normals too.
             _createDefaultFrameData(positions, labels) {
                 const numPoints = positions.length / 3;
                 const colors = new Float32Array(numPoints * 3);
-                colors.fill(1.0); // Default to white
+                colors.fill(1.0);
                 const normals = new Float32Array(numPoints * 3);
-                for(let i=0; i<numPoints; i++) normals.set([0,1,0], i*3); // Default to up vector
+                for(let i=0; i<numPoints; i++) normals.set([0,1,0], i*3);
                 
                 return { 
                     positions: new Float32Array(positions), 
@@ -1170,7 +1189,6 @@
                 };
             }
 
-            // *** MODIFIED ***: The PCD parser now handles normals.
             parsePCD(content) {
                 const lines = content.split('\n');
                 let dataStart = 0, pointCount = 0;
@@ -1243,7 +1261,6 @@
                 return [(h & 0xFF) / 255, ((h >> 8) & 0xFF) / 255, ((h >> 16) & 0xFF) / 255];
             }
             
-            // *** MODIFIED ***: Displays frame using the current color mode
             displayFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
                 const frameData = this.frames[frameIndex];
@@ -1276,7 +1293,6 @@
                 this.createWireframesForFrame(frameData);
             }
 
-            // *** NEW ***: Helper to get the correct color buffer based on the current mode.
             getColorAttributeForFrame(frameData) {
                 switch(this.colorMode) {
                     case 'rgb':
@@ -1314,11 +1330,9 @@
                 return c;
             }
 
-            // *** NEW ***: Function to generate colors from normal vectors
             generateNormalColors(normals) {
                 const colors = new Float32Array(normals.length);
                 for (let i = 0; i < normals.length; i++) {
-                    // Map component from [-1, 1] to [0, 1]
                     colors[i] = (normals[i] + 1) / 2;
                 }
                 return colors;
@@ -1412,7 +1426,7 @@
             }
 
             updateUI() {
-                if (this.currentScene) document.getElementById('scene-info').textContent = `${this.currentScene.scene}`;
+                if (this.currentAnimation) document.getElementById('scene-info').textContent = `${this.currentAnimation.animationName}`;
                 document.getElementById('frame-info').textContent = `${this.currentFrame + 1} / ${this.frames.length}`;
                 if (this.frames[this.currentFrame]) document.getElementById('points-info').textContent = this.frames[this.currentFrame].pointCount.toLocaleString();
                 
