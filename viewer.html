@@ -610,7 +610,7 @@
                             </div>
                         </div>
 
-                        <div class="control-button active" id="toggle-color-mode">🎨 View: Label</div>
+                        <div class="control-button" id="toggle-color-mode">🎨 View: Label</div>
                         <div class="control-button" id="toggle-wireframe">📦 Wireframe</div>
                         <div class="control-button" id="toggle-stats">📊 Stats</div>
                         <div class="control-button active" id="toggle-focus-point">🎯 Focus Point</div>
@@ -677,8 +677,8 @@
                 this.speed = 1.0;
                 this.frameInterval = null;
                 
-                // *** NEW ***: State for color mode
-                this.colorMode = 'label'; // Can be 'label' or 'rgb'
+                // *** MODIFIED ***: State for color mode now includes 'normal'
+                this.colorMode = 'label'; // Can be 'label', 'rgb', or 'normal'
                 
                 this.mouse = new THREE.Vector2();
                 this.mouseDown = false;
@@ -776,98 +776,67 @@
                 const sidebar = document.getElementById('sidebar');
                 const toggleBtn = document.getElementById('toggle-sidebar');
                 
-                if (this.sidebarVisible) {
-                    sidebar.classList.remove('hidden');
-                    toggleBtn.classList.add('active');
-                } else {
-                    sidebar.classList.add('hidden');
-                    toggleBtn.classList.remove('active');
-                }
+                sidebar.classList.toggle('hidden', !this.sidebarVisible);
+                toggleBtn.classList.toggle('active', this.sidebarVisible);
             }
 
             togglePanels() {
                 this.panelsVisible = !this.panelsVisible;
                 const overlay = document.getElementById('ui-overlay');
                 const toggleBtn = document.getElementById('toggle-panels');
-                
-                if (this.panelsVisible) {
-                    overlay.classList.remove('panels-hidden');
-                    toggleBtn.classList.add('active');
-                } else {
-                    overlay.classList.add('panels-hidden');
-                    toggleBtn.classList.remove('active');
-                }
+
+                overlay.classList.toggle('panels-hidden', !this.panelsVisible);
+                toggleBtn.classList.toggle('active', this.panelsVisible);
             }
 
             toggleVideo() {
                 this.videoVisible = !this.videoVisible;
-                const videoContainer = document.getElementById('video-container');
-                const resizer = document.getElementById('resizer');
-                const toggleBtn = document.getElementById('toggle-video');
-                
-                if (this.videoVisible) {
-                    videoContainer.classList.remove('hidden');
-                    resizer.style.display = 'block';
-                    toggleBtn.classList.add('active');
-                } else {
-                    videoContainer.classList.add('hidden');
-                    resizer.style.display = 'none';
-                    toggleBtn.classList.remove('active');
-                }
+                document.getElementById('video-container').classList.toggle('hidden', !this.videoVisible);
+                document.getElementById('resizer').style.display = this.videoVisible ? 'block' : 'none';
+                document.getElementById('toggle-video').classList.toggle('active', this.videoVisible);
                 
                 setTimeout(() => this.updateCameraAspect(), 300);
             }
 
             toggleFullscreen() {
-                const toggleBtn = document.getElementById('toggle-fullscreen');
-                
                 if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen().catch(err => {
-                        console.log('Error entering fullscreen:', err);
-                    });
+                    document.documentElement.requestFullscreen().catch(err => console.error('Error entering fullscreen:', err));
                 } else {
-                    document.exitFullscreen().catch(err => {
-                        console.log('Error exiting fullscreen:', err);
-                    });
+                    document.exitFullscreen().catch(err => console.error('Error exiting fullscreen:', err));
                 }
             }
 
             async buildDatasetStructure(files) {
                 const structure = {};
-                const fileArray = Array.from(files);
-
-                for (const file of fileArray) {
+                for (const file of Array.from(files)) {
                     const pathParts = file.webkitRelativePath.split('/');
                     if (pathParts.length < 5) continue;
                     
-                    const [scansFolder, room, prompt, scene, filename] = pathParts;
-                    if (!structure[room]) structure[room] = {};
-                    if (!structure[room][prompt]) structure[room][prompt] = {};
-                    if (!structure[room][prompt][scene]) {
-                        structure[room][prompt][scene] = { pointCloudFiles: [], videoFile: null, descriptionFile: null, description: null };
+                    const [, room, prompt, scene, filename] = pathParts;
+                    const sceneData = (structure[room] ??= {})[prompt] ??= {};
+                    if (!sceneData[scene]) {
+                        sceneData[scene] = { pointCloudFiles: [], videoFile: null, descriptionFile: null, description: null };
                     }
                     
-                    const sceneData = structure[room][prompt][scene];
-                    if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) sceneData.pointCloudFiles.push(file);
-                    else if (filename.toLowerCase().endsWith('.mp4')) sceneData.videoFile = file;
-                    else if (filename.toLowerCase().endsWith('.json')) sceneData.descriptionFile = file;
+                    const currentScene = sceneData[scene];
+                    if (/\.(ply|xyz|pcd|txt)$/i.test(filename)) currentScene.pointCloudFiles.push(file);
+                    else if (/\.mp4$/i.test(filename)) currentScene.videoFile = file;
+                    else if (/\.json$/i.test(filename)) currentScene.descriptionFile = file;
                 }
 
-                for (const room in structure) {
-                    for (const prompt in structure[room]) {
-                        for (const scene in structure[room][prompt]) {
-                            const sceneData = structure[room][prompt][scene];
-                            if (sceneData.descriptionFile) {
+                for (const room of Object.values(structure)) {
+                    for (const prompt of Object.values(room)) {
+                        for (const scene of Object.values(prompt)) {
+                            if (scene.descriptionFile) {
                                 try {
-                                    const jsonContent = await sceneData.descriptionFile.text();
-                                    const jsonData = JSON.parse(jsonContent);
-                                    if (jsonData.description) sceneData.description = jsonData.description;
+                                    const json = JSON.parse(await scene.descriptionFile.text());
+                                    scene.description = json.description || null;
                                 } catch (e) {
-                                    console.error(`Error parsing JSON for scene ${scene}:`, e);
-                                    sceneData.description = "Error reading description.";
+                                    console.error(`Error parsing JSON description:`, e);
+                                    scene.description = "Error reading description.";
                                 }
                             }
-                            sceneData.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+                            scene.pointCloudFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
                         }
                     }
                 }
@@ -924,10 +893,10 @@
             toggleFolder(item) {
                 item.classList.toggle('collapsed');
                 const icon = item.querySelector('.tree-icon');
-                if (item.classList.contains('collapsed')) {
-                    icon.textContent = icon.textContent.replace('📁', '📂').replace('📋', '📄');
-                } else {
-                    icon.textContent = icon.textContent.replace('📂', '📁').replace('📄', '📋');
+                if (icon) {
+                    icon.textContent = item.classList.contains('collapsed') 
+                        ? icon.textContent.replace('📁', '📂').replace('📋', '📄')
+                        : icon.textContent.replace('📂', '📁').replace('📄', '📋');
                 }
             }
 
@@ -942,14 +911,10 @@
                 
                 this.updateBreadcrumb(path);
                 
-                for (const file of sceneData.pointCloudFiles) {
-                    try {
-                        const frameData = await this.parseFile(file);
-                        if (frameData) this.frames.push(frameData);
-                    } catch (error) {
-                        console.error(`Error loading file ${file.name}:`, error);
-                    }
-                }
+                this.frames = await Promise.all(sceneData.pointCloudFiles.map(file => this.parseFile(file).catch(error => {
+                    console.error(`Error loading file ${file.name}:`, error);
+                    return null;
+                }))).then(frames => frames.filter(f => f !== null));
                 
                 document.getElementById('loading').classList.add('hidden');
                 
@@ -959,7 +924,6 @@
                     this.resetView(); 
                 }
                 
-                this.showWireframe = false;
                 document.getElementById('toggle-wireframe').classList.remove('active');
                 this.wireframeGroup.visible = false;
                 
@@ -987,8 +951,7 @@
             }
 
             updateBreadcrumb(path) {
-                const [room, prompt, scene] = path;
-                document.getElementById('breadcrumb').innerHTML = `<span class="breadcrumb-item">${room}</span> → <span class="breadcrumb-item">${prompt}</span> → <span class="breadcrumb-item">${scene}</span>`;
+                document.getElementById('breadcrumb').innerHTML = path.map(p => `<span class="breadcrumb-item">${p}</span>`).join(' → ');
             }
 
             updateSelectedTreeItem(path) {
@@ -1004,102 +967,68 @@
             setupControls() {
                 const canvas = this.renderer.domElement;
 
-                canvas.addEventListener('contextmenu', (event) => event.preventDefault());
-
-                canvas.addEventListener('mousedown', (event) => {
-                    if (event.button === 0) {
-                        this.mouseDown = true;
-                    } else if (event.button === 2) {
-                        this.isPanning = true;
-                    }
-                    this.previousMousePosition.set(event.clientX, event.clientY);
+                canvas.addEventListener('contextmenu', e => e.preventDefault());
+                canvas.addEventListener('mousedown', e => {
+                    if (e.button === 0) this.mouseDown = true;
+                    else if (e.button === 2) this.isPanning = true;
+                    this.previousMousePosition.set(e.clientX, e.clientY);
                 });
-
-                canvas.addEventListener('mouseup', (event) => {
-                    if (event.button === 0) {
-                        this.mouseDown = false;
-                    } else if (event.button === 2) {
-                        this.isPanning = false;
-                    }
+                canvas.addEventListener('mouseup', e => {
+                    if (e.button === 0) this.mouseDown = false;
+                    else if (e.button === 2) this.isPanning = false;
                 });
-                
-                canvas.addEventListener('mousemove', (event) => {
+                canvas.addEventListener('mousemove', e => {
                     if (!this.mouseDown && !this.isPanning) return;
-
-                    const deltaMove = new THREE.Vector2(
-                        event.clientX - this.previousMousePosition.x,
-                        event.clientY - this.previousMousePosition.y
-                    );
-
+                    const delta = new THREE.Vector2(e.clientX - this.previousMousePosition.x, e.clientY - this.previousMousePosition.y);
                     if (this.isPanning) {
-                        const panSpeedFactor = 0.002;
-                        const distance = this.camera.position.distanceTo(this.cameraTarget);
-                        const effectivePanSpeed = distance * panSpeedFactor;
-                        const panOffset = new THREE.Vector3();
-                        
-                        const rightVector = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
-                        panOffset.add(rightVector.multiplyScalar(-deltaMove.x * effectivePanSpeed));
-                        
-                        const upVector = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
-                        panOffset.add(upVector.multiplyScalar(deltaMove.y * effectivePanSpeed));
-                        
-                        this.camera.position.add(panOffset);
-                        this.cameraTarget.add(panOffset);
-                        this.targetIndicator.position.copy(this.cameraTarget);
-
+                        const dist = this.camera.position.distanceTo(this.cameraTarget);
+                        const panSpeed = dist * 0.002;
+                        const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0).multiplyScalar(-delta.x * panSpeed);
+                        const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1).multiplyScalar(delta.y * panSpeed);
+                        this.camera.position.add(right).add(up);
+                        this.cameraTarget.add(right).add(up);
                     } else if (this.mouseDown) { 
-                        const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
-                        const spherical = new THREE.Spherical().setFromVector3(cameraOffset);
-                        
-                        spherical.theta -= deltaMove.x * 0.005;
-                        spherical.phi -= deltaMove.y * 0.005;
+                        const offset = this.camera.position.clone().sub(this.cameraTarget);
+                        const spherical = new THREE.Spherical().setFromVector3(offset);
+                        spherical.theta -= delta.x * 0.005;
+                        spherical.phi -= delta.y * 0.005;
                         spherical.phi = Math.max(0.01, Math.min(Math.PI - 0.01, spherical.phi));
-                        
-                        cameraOffset.setFromSpherical(spherical);
-                        this.camera.position.copy(this.cameraTarget).add(cameraOffset);
+                        offset.setFromSpherical(spherical);
+                        this.camera.position.copy(this.cameraTarget).add(offset);
                         this.camera.lookAt(this.cameraTarget);
                     }
-
-                    this.previousMousePosition.set(event.clientX, event.clientY);
+                    this.targetIndicator.position.copy(this.cameraTarget);
+                    this.previousMousePosition.set(e.clientX, e.clientY);
                 });
-
-                canvas.addEventListener('wheel', (event) => {
-                    event.preventDefault();
-                    const scale = event.deltaY > 0 ? 1.1 : 0.9;
-                    const cameraOffset = new THREE.Vector3().subVectors(this.camera.position, this.cameraTarget);
-                    cameraOffset.multiplyScalar(scale);
-                    this.camera.position.copy(this.cameraTarget).add(cameraOffset);
+                canvas.addEventListener('wheel', e => {
+                    e.preventDefault();
+                    const scale = e.deltaY > 0 ? 1.1 : 0.9;
+                    this.camera.position.sub(this.cameraTarget).multiplyScalar(scale).add(this.cameraTarget);
                 });
-
-                window.addEventListener('keydown', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = true; });
-                window.addEventListener('keyup', (e) => { if (e.key === 'c' || e.key === 'C') this.isCKeyDown = false; });
-
-                canvas.addEventListener('click', (event) => {
+                window.addEventListener('keydown', e => { if (e.key.toLowerCase() === 'c') this.isCKeyDown = true; });
+                window.addEventListener('keyup', e => { if (e.key.toLowerCase() === 'c') this.isCKeyDown = false; });
+                canvas.addEventListener('click', e => {
                     if (!this.isCKeyDown || !this.points) return;
-                    
-                    const rect = this.renderer.domElement.getBoundingClientRect();
-                    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-                    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
+                    const rect = canvas.getBoundingClientRect();
+                    this.mouse.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
                     this.raycaster.setFromCamera(this.mouse, this.camera);
                     const intersects = this.raycaster.intersectObject(this.points);
-
                     if (intersects.length > 0) {
-                        const intersectionPoint = intersects[0].point;
-                        this.cameraTarget.copy(intersectionPoint);
-                        this.targetIndicator.position.copy(intersectionPoint);
+                        this.cameraTarget.copy(intersects[0].point);
+                        this.targetIndicator.position.copy(this.cameraTarget);
                         this.camera.lookAt(this.cameraTarget);
                     }
                 });
                 
-                const resizer = document.getElementById('resizer');
-                resizer.addEventListener('mousedown', (e) => {
+                document.getElementById('resizer').addEventListener('mousedown', e => {
                     e.preventDefault();
-                    let h = document.getElementById('video-container').offsetHeight, y = e.clientY;
-                    const onMove = (me) => {
+                    const vCont = document.getElementById('video-container');
+                    const mCont = document.getElementById('main-content');
+                    let h = vCont.offsetHeight, y = e.clientY;
+                    const onMove = me => {
                         let newH = h - (me.clientY - y);
-                        newH = Math.max(50, Math.min(document.getElementById('main-content').offsetHeight - 150, newH));
-                        document.getElementById('video-container').style.height = `${newH}px`;
+                        newH = Math.max(50, Math.min(mCont.offsetHeight - 150, newH));
+                        vCont.style.height = `${newH}px`;
                         this.updateCameraAspect();
                     };
                     const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -1107,106 +1036,78 @@
                     document.addEventListener('mouseup', onUp);
                 });
 
-                // Panel toggle controls
                 document.getElementById('toggle-sidebar').addEventListener('click', () => this.toggleSidebar());
                 document.getElementById('toggle-panels').addEventListener('click', () => this.togglePanels());
                 document.getElementById('toggle-video').addEventListener('click', () => this.toggleVideo());
                 document.getElementById('toggle-fullscreen').addEventListener('click', () => this.toggleFullscreen());
-
-                // UI Controls
                 document.getElementById('play-pause').addEventListener('click', () => this.togglePlayback());
                 document.getElementById('prev-frame').addEventListener('click', () => this.previousFrame());
                 document.getElementById('next-frame').addEventListener('click', () => this.nextFrame());
                 document.getElementById('reset-view').addEventListener('click', () => this.resetView());
-                
-                document.getElementById('timeline').addEventListener('click', (event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    const progress = (event.clientX - rect.left) / rect.width;
-                    this.seekToFrame(Math.floor(progress * this.frames.length));
+                document.getElementById('timeline').addEventListener('click', e => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    this.seekToFrame(Math.floor(((e.clientX - rect.left) / rect.width) * this.frames.length));
                 });
-
-                document.getElementById('point-size').addEventListener('input', (e) => {
+                document.getElementById('point-size').addEventListener('input', e => {
                     document.getElementById('point-size-value').textContent = parseFloat(e.target.value).toFixed(2);
                     this.updatePointSize(parseFloat(e.target.value));
                 });
-
-                document.getElementById('speed-control').addEventListener('input', (e) => {
+                document.getElementById('speed-control').addEventListener('input', e => {
                     this.speed = parseFloat(e.target.value);
                     document.getElementById('speed-value').textContent = this.speed.toFixed(1);
                     this.updatePlaybackSpeed();
                 });
-
-                document.getElementById('fps-control').addEventListener('input', (e) => {
+                document.getElementById('fps-control').addEventListener('input', e => {
                     this.fps = parseInt(e.target.value, 10);
                     document.getElementById('fps-value').textContent = this.fps;
                     if (this.isPlaying) this.startPlayback();
                     this.updateUI(); 
                 });
-
-                document.getElementById('toggle-wireframe').addEventListener('click', (e) => {
+                document.getElementById('toggle-wireframe').addEventListener('click', e => {
                     this.showWireframe = !this.showWireframe;
                     this.wireframeGroup.visible = this.showWireframe;
                     e.currentTarget.classList.toggle('active', this.showWireframe);
                 });
-
-                // *** MODIFIED ***: Event listener for the new color mode toggle
-                document.getElementById('toggle-color-mode').addEventListener('click', (e) => {
-                    this.colorMode = (this.colorMode === 'label') ? 'rgb' : 'label';
-                    
-                    e.currentTarget.innerHTML = this.colorMode === 'label' ? '🎨 View: Label' : '📸 View: RGB';
-                    e.currentTarget.classList.toggle('active', this.colorMode === 'label');
-                    
+                
+                // *** MODIFIED ***: Event listener for the color mode toggle now cycles through three states.
+                document.getElementById('toggle-color-mode').addEventListener('click', e => {
+                    const button = e.currentTarget;
+                    if (this.colorMode === 'label') {
+                        this.colorMode = 'rgb';
+                        button.innerHTML = '📸 View: RGB';
+                    } else if (this.colorMode === 'rgb') {
+                        this.colorMode = 'normal';
+                        button.innerHTML = '🌐 View: Normal';
+                    } else { // was 'normal'
+                        this.colorMode = 'label';
+                        button.innerHTML = '🎨 View: Label';
+                    }
                     this.updatePointColors();
                 });
 
-                document.getElementById('toggle-focus-point').addEventListener('click', (e) => {
+                document.getElementById('toggle-focus-point').addEventListener('click', e => {
                     this.showFocusPoint = !this.showFocusPoint;
                     if (this.targetIndicator) this.targetIndicator.visible = this.showFocusPoint;
                     e.currentTarget.classList.toggle('active', this.showFocusPoint);
                 });
-
-                document.querySelectorAll('.color-swatch').forEach(swatch => {
-                    swatch.addEventListener('click', (e) => {
-                        document.querySelector('.color-swatch.active')?.classList.remove('active');
-                        const target = e.currentTarget;
-                        target.classList.add('active');
-                        this.setBackgroundColor(target.dataset.color);
-                    });
-                });
-
-                document.getElementById('folder-upload').addEventListener('change', async (e) => await this.loadDataset(e.target.files));
-
-                document.addEventListener('keydown', (e) => {
+                document.querySelectorAll('.color-swatch').forEach(s => s.addEventListener('click', e => {
+                    document.querySelector('.color-swatch.active')?.classList.remove('active');
+                    e.currentTarget.classList.add('active');
+                    this.setBackgroundColor(e.currentTarget.dataset.color);
+                }));
+                document.getElementById('folder-upload').addEventListener('change', e => this.loadDataset(e.target.files));
+                document.addEventListener('keydown', e => {
                     if (e.target.tagName === 'INPUT' || this.isCKeyDown) return;
-                    
-                    const keyMap = { 
-                        'Space': () => this.togglePlayback(), 
-                        'ArrowLeft': () => this.previousFrame(), 
-                        'ArrowRight': () => this.nextFrame(), 
-                        'KeyR': () => this.resetView(),
-                        'KeyH': () => this.togglePanels(),
-                        'KeyS': () => this.toggleSidebar(),
-                        'KeyV': () => this.toggleVideo(),
-                        'KeyF': () => this.toggleFullscreen()
-                    };
-                    
-                    if (keyMap[e.code]) { 
-                        e.preventDefault(); 
-                        keyMap[e.code](); 
-                    }
+                    const keyMap = { ' ': 'togglePlayback', 'arrowleft': 'previousFrame', 'arrowright': 'nextFrame', 'r': 'resetView', 'h': 'togglePanels', 's': 'toggleSidebar', 'v': 'toggleVideo', 'f': 'toggleFullscreen' };
+                    const action = keyMap[e.key.toLowerCase()];
+                    if (action && this[action]) { e.preventDefault(); this[action](); }
                 });
-
                 window.addEventListener('resize', () => this.updateCameraAspect());
-
                 document.addEventListener('fullscreenchange', () => {
-                    const toggleBtn = document.getElementById('toggle-fullscreen');
-                    if (document.fullscreenElement) {
-                        toggleBtn.classList.add('active');
-                        toggleBtn.innerHTML = '🖼️ Exit Fullscreen';
-                    } else {
-                        toggleBtn.classList.remove('active');
-                        toggleBtn.innerHTML = '🖥️ Fullscreen';
-                    }
+                    const btn = document.getElementById('toggle-fullscreen');
+                    const isFullscreen = !!document.fullscreenElement;
+                    btn.classList.toggle('active', isFullscreen);
+                    btn.innerHTML = isFullscreen ? '🖼️ Exit Fullscreen' : '🖥️ Fullscreen';
                     setTimeout(() => this.updateCameraAspect(), 100);
                 });
             }
@@ -1227,78 +1128,56 @@
             }
             
             async parseFile(file) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        try {
-                            const c = e.target.result;
-                            const ext = file.name.split('.').pop().toLowerCase();
-                            let frameData;
-                            if (ext === 'ply') frameData = this.parsePLY(c);
-                            else if (ext === 'txt' || ext === 'xyz') frameData = this.parseXYZ(c);
-                            else if (ext === 'pcd') frameData = this.parsePCD(c);
-                            else reject(new Error('Unsupported file format'));
-                            resolve(frameData);
-                        } catch (error) { reject(error); }
-                    };
-                    reader.onerror = () => reject(new Error('Failed to read file'));
-                    reader.readAsText(file);
-                });
+                const content = await file.text();
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (ext === 'pcd') return this.parsePCD(content);
+                // Simple parsers for other formats if needed
+                if (ext === 'ply' || ext === 'xyz' || ext === 'txt') {
+                    // Fallback parser for non-PCD files, won't have normals/rgb unless you implement it
+                    const lines = content.split('\n');
+                    let dataStart = 0;
+                    if (ext === 'ply') dataStart = lines.findIndex(l => l.trim() === 'end_header') + 1;
+                    const positions = [], labels = [];
+                    for (let i = dataStart; i < lines.length; i++) {
+                        const parts = lines[i].trim().split(/\s+/);
+                        if (parts.length >= 3) {
+                            const [x,y,z] = parts.slice(0,3).map(parseFloat);
+                            if (!isNaN(x)) {
+                                positions.push(x,y,z);
+                                labels.push(parts[3] || 'default');
+                            }
+                        }
+                    }
+                    return this._createDefaultFrameData(positions, labels);
+                }
+                throw new Error(`Unsupported file format: ${ext}`);
             }
             
-            // *** MODIFIED ***: These parsers now return a default 'colors' array
+            // *** MODIFIED ***: This helper now creates default normals too.
             _createDefaultFrameData(positions, labels) {
-                const colors = new Float32Array(positions.length);
+                const numPoints = positions.length / 3;
+                const colors = new Float32Array(numPoints * 3);
                 colors.fill(1.0); // Default to white
+                const normals = new Float32Array(numPoints * 3);
+                for(let i=0; i<numPoints; i++) normals.set([0,1,0], i*3); // Default to up vector
+                
                 return { 
                     positions: new Float32Array(positions), 
                     labels: labels, 
                     colors: colors,
-                    pointCount: positions.length / 3 
+                    normals: normals,
+                    pointCount: numPoints
                 };
             }
 
-            parsePLY(content) {
-                const lines = content.split('\n');
-                let dataStartIndex = lines.findIndex(line => line.trim() === 'end_header') + 1;
-                const positions = [], labels = [];
-                for (let i = dataStartIndex; i < lines.length; i++) {
-                    const parts = lines[i].trim().split(/\s+/);
-                    if (parts.length >= 3) {
-                        const [x, y, z] = parts.slice(0, 3).map(parseFloat);
-                        if (!isNaN(x)) {
-                            positions.push(x, y, z);
-                            labels.push(parts.length > 3 ? parts[3] : 'default');
-                        }
-                    }
-                }
-                return this._createDefaultFrameData(positions, labels);
-            }
-
-            parseXYZ(content) {
-                const lines = content.split('\n');
-                const positions = [], labels = [];
-                for (const line of lines) {
-                    const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 3) {
-                        const [x, y, z] = parts.slice(0, 3).map(parseFloat);
-                        if (!isNaN(x)) {
-                            positions.push(x, y, z);
-                            labels.push(parts.length > 3 ? parts[3] : 'default');
-                        }
-                    }
-                }
-                return this._createDefaultFrameData(positions, labels);
-            }
-
-            // *** MODIFIED ***: The PCD parser now handles the 'rgb' field
+            // *** MODIFIED ***: The PCD parser now handles normals.
             parsePCD(content) {
                 const lines = content.split('\n');
-                let dataStart = 0, pointCount = 0, dataFormat = 'ascii';
-                const fields = [];
+                let dataStart = 0, pointCount = 0;
+                let fields = [], dataFormat = 'ascii';
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i].trim();
-                    if (line.startsWith('FIELDS')) fields.push(...line.split(' ').slice(1).map(n => n.toLowerCase()));
+                    if (line.startsWith('FIELDS')) fields = line.split(' ').slice(1).map(n => n.toLowerCase());
                     else if (line.startsWith('POINTS')) pointCount = parseInt(line.split(' ')[1]);
                     else if (line.startsWith('DATA')) {
                         dataFormat = line.split(' ')[1].toLowerCase();
@@ -1308,27 +1187,32 @@
                 }
                 if (dataFormat !== 'ascii') throw new Error('Only ASCII PCD format is supported');
                 
-                const positions = [], labels = [], colors = [];
-                const xIndex = fields.indexOf('x'), yIndex = fields.indexOf('y'), zIndex = fields.indexOf('z');
-                const rgbIndex = fields.indexOf('rgb');
-                const labelIndex = fields.includes('label') ? fields.indexOf('label') : fields.indexOf('semantic');
-                
+                const positions = [], labels = [], colors = [], normals = [];
+                const idx = {
+                    x: fields.indexOf('x'), y: fields.indexOf('y'), z: fields.indexOf('z'),
+                    rgb: fields.indexOf('rgb'), label: fields.indexOf('label'),
+                    nx: fields.indexOf('normal_x'), ny: fields.indexOf('normal_y'), nz: fields.indexOf('normal_z')
+                };
+
                 for (let i = dataStart; i < dataStart + pointCount && i < lines.length; i++) {
                     const parts = lines[i].trim().split(/\s+/);
                     if (parts.length >= 3) {
-                        const x = parseFloat(parts[xIndex]), y = parseFloat(parts[yIndex]), z = parseFloat(parts[zIndex]);
+                        const x = parseFloat(parts[idx.x]), y = parseFloat(parts[idx.y]), z = parseFloat(parts[idx.z]);
                         if (!isNaN(x)) {
                             positions.push(x, y, z);
-                            labels.push(labelIndex !== -1 && parts[labelIndex] ? parts[labelIndex] : 'default');
+                            labels.push(idx.label !== -1 && parts[idx.label] ? parts[idx.label] : 'default');
                             
-                            if (rgbIndex !== -1) {
-                                const packedRgb = parseInt(parts[rgbIndex]);
-                                const r = (packedRgb >> 16) & 0xFF;
-                                const g = (packedRgb >> 8) & 0xFF;
-                                const b = packedRgb & 0xFF;
-                                colors.push(r / 255, g / 255, b / 255);
+                            if (idx.rgb !== -1) {
+                                const packed = parseInt(parts[idx.rgb]);
+                                colors.push(((packed >> 16) & 0xFF) / 255, ((packed >> 8) & 0xFF) / 255, (packed & 0xFF) / 255);
                             } else {
-                                colors.push(1.0, 1.0, 1.0); // Default to white if no RGB data
+                                colors.push(1.0, 1.0, 1.0);
+                            }
+
+                            if (idx.nx !== -1) {
+                                normals.push(parseFloat(parts[idx.nx]), parseFloat(parts[idx.ny]), parseFloat(parts[idx.nz]));
+                            } else {
+                                normals.push(0.0, 1.0, 0.0);
                             }
                         }
                     }
@@ -1336,7 +1220,8 @@
                 return { 
                     positions: new Float32Array(positions), 
                     labels: labels, 
-                    colors: new Float32Array(colors), 
+                    colors: new Float32Array(colors),
+                    normals: new Float32Array(normals),
                     pointCount: positions.length / 3 
                 };
             }
@@ -1354,10 +1239,7 @@
             generateColorFromLabel(label) {
                 let h = 0;
                 const s = String(label);
-                for (let i = 0; i < s.length; i++) {
-                    h = ((h << 5) - h) + s.charCodeAt(i);
-                    h &= h;
-                }
+                for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
                 return [(h & 0xFF) / 255, ((h >> 8) & 0xFF) / 255, ((h >> 16) & 0xFF) / 255];
             }
             
@@ -1370,29 +1252,41 @@
                     this.scene.remove(this.points);
                     this.points.geometry.dispose();
                     this.points.material.dispose();
+                    this.points = null;
                 }
-                while(this.wireframeGroup.children.length) {
+                while(this.wireframeGroup.children.length > 0) {
                     const child = this.wireframeGroup.children[0];
                     this.wireframeGroup.remove(child);
                     child.geometry.dispose();
-                    child.material.dispose();
+                    if(child.material) child.material.dispose();
                 }
 
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(frameData.positions, 3));
                 
-                const colors = this.colorMode === 'rgb' ? frameData.colors : this.generateLabelColors(frameData.labels);
-                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                const colorAttribute = this.getColorAttributeForFrame(frameData);
+                geometry.setAttribute('color', new THREE.BufferAttribute(colorAttribute, 3));
 
-                const material = new THREE.PointsMaterial({
+                this.points = new THREE.Points(geometry, new THREE.PointsMaterial({
                     size: parseFloat(document.getElementById('point-size').value),
                     vertexColors: true,
                     sizeAttenuation: true
-                });
-                this.points = new THREE.Points(geometry, material);
+                }));
                 this.scene.add(this.points);
-
                 this.createWireframesForFrame(frameData);
+            }
+
+            // *** NEW ***: Helper to get the correct color buffer based on the current mode.
+            getColorAttributeForFrame(frameData) {
+                switch(this.colorMode) {
+                    case 'rgb':
+                        return frameData.colors;
+                    case 'normal':
+                        return this.generateNormalColors(frameData.normals);
+                    case 'label':
+                    default:
+                        return this.generateLabelColors(frameData.labels);
+                }
             }
 
             createWireframesForFrame(frameData) {
@@ -1400,44 +1294,40 @@
                 for (let i = 0; i < frameData.labels.length; i++) {
                     const label = frameData.labels[i];
                     if (['default', 'floor', 'wall', 'ceiling'].some(term => String(label).toLowerCase().includes(term))) continue;
-                    
                     if (!pointsByLabel.has(label)) pointsByLabel.set(label, []);
-                    pointsByLabel.get(label).push(
-                        new THREE.Vector3(
-                            frameData.positions[i * 3],
-                            frameData.positions[i * 3 + 1],
-                            frameData.positions[i * 3 + 2]
-                        )
-                    );
+                    pointsByLabel.get(label).push(new THREE.Vector3().fromArray(frameData.positions, i * 3));
                 }
-
                 document.getElementById('objects-info').textContent = pointsByLabel.size;
-
                 for (const [label, points] of pointsByLabel.entries()) {
                     if (points.length < 2) continue;
                     const box = new THREE.Box3().setFromPoints(points);
                     if (box.isEmpty()) continue;
-                    const color = new THREE.Color(...this.getColorForLabel(label));
-                    this.wireframeGroup.add(new THREE.Box3Helper(box, color));
+                    this.wireframeGroup.add(new THREE.Box3Helper(box, new THREE.Color(...this.getColorForLabel(label))));
                 }
             }
 
             generateLabelColors(labels) {
                 const c = new Float32Array(labels.length * 3);
                 for (let i = 0; i < labels.length; i++) {
-                    const ca = this.getColorForLabel(labels[i]);
-                    c.set(ca, i * 3);
+                    c.set(this.getColorForLabel(labels[i]), i * 3);
                 }
                 return c;
             }
 
-            // *** NEW ***: Function to update colors without reloading geometry
+            // *** NEW ***: Function to generate colors from normal vectors
+            generateNormalColors(normals) {
+                const colors = new Float32Array(normals.length);
+                for (let i = 0; i < normals.length; i++) {
+                    // Map component from [-1, 1] to [0, 1]
+                    colors[i] = (normals[i] + 1) / 2;
+                }
+                return colors;
+            }
+
             updatePointColors() {
                 if (!this.points || !this.frames[this.currentFrame]) return;
-
                 const frameData = this.frames[this.currentFrame];
-                const newColors = this.colorMode === 'rgb' ? frameData.colors : this.generateLabelColors(frameData.labels);
-                
+                const newColors = this.getColorAttributeForFrame(frameData);
                 this.points.geometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
                 this.points.geometry.attributes.color.needsUpdate = true;
             }
@@ -1455,14 +1345,12 @@
                 const playText = document.getElementById('play-text');
                 const video = document.getElementById('video-player');
                 
+                playIcon.textContent = this.isPlaying ? '⏸️' : '▶️';
+                playText.textContent = this.isPlaying ? 'Pause' : 'Play';
                 if (this.isPlaying) {
-                    playIcon.textContent = '⏸️';
-                    playText.textContent = 'Pause';
                     video.play().catch(e => console.error("Video play failed:", e));
                     this.startPlayback();
                 } else {
-                    playIcon.textContent = '▶️';
-                    playText.textContent = 'Play';
                     video.pause();
                     this.stopPlayback();
                 }
@@ -1470,19 +1358,15 @@
 
             startPlayback() {
                 if (this.frameInterval) clearInterval(this.frameInterval);
-                const interval = (1000 / this.fps) / this.speed;
                 this.frameInterval = setInterval(() => {
-                    let nextFrame = this.currentFrame + 1;
-                    if (nextFrame >= this.frames.length) {
-                        nextFrame = 0;
-                        document.getElementById('video-player')?.load();
-                    }
+                    let nextFrame = (this.currentFrame + 1) % this.frames.length;
+                    if (nextFrame === 0) document.getElementById('video-player')?.load();
                     this.seekToFrame(nextFrame);
-                }, interval);
+                }, (1000 / this.fps) / this.speed);
             }
 
             stopPlayback() {
-                if (this.frameInterval) clearInterval(this.frameInterval);
+                clearInterval(this.frameInterval);
                 this.frameInterval = null;
             }
 
@@ -1497,47 +1381,32 @@
 
             previousFrame() {
                 if (this.frames.length === 0) return;
-                this.seekToFrame(this.currentFrame === 0 ? this.frames.length - 1 : this.currentFrame - 1);
+                this.seekToFrame((this.currentFrame - 1 + this.frames.length) % this.frames.length);
             }
 
             seekToFrame(frameIndex) {
                 if (frameIndex < 0 || frameIndex >= this.frames.length) return;
-                
                 this.currentFrame = frameIndex;
                 this.displayFrame(this.currentFrame);
                 this.updateUI();
 
                 const video = document.getElementById('video-player');
-                const timeInSeconds = this.currentFrame / this.fps;
-
-                if (video && video.readyState > 0 && !video.seeking) {
-                    video.currentTime = timeInSeconds;
+                if (video?.readyState > 0 && !video.seeking) {
+                    video.currentTime = this.currentFrame / this.fps;
                 }
             }
 
             resetView() {
-                if (this.points?.geometry.attributes.position) {
-                    const boundingBox = new THREE.Box3().setFromBufferAttribute(this.points.geometry.attributes.position);
-                    
-                    if (!boundingBox.isEmpty()) {
-                        boundingBox.getCenter(this.cameraTarget);
-                        const size = boundingBox.getSize(new THREE.Vector3());
-                        const maxDim = Math.max(size.x, size.y, size.z);
-                        const distance = maxDim * 1.5;
-
-                        const newPosition = this.cameraTarget.clone().add(new THREE.Vector3(0, distance * 0.5, distance));
-                        this.camera.position.copy(newPosition);
-
-                    } else {
-                        this.cameraTarget.set(0, 0, 0);
-                        this.camera.position.set(5, 5, 5);
-                    }
-                    
-                } else {
-                    this.cameraTarget.set(0, 0, 0);
-                    this.camera.position.set(5, 5, 5);
-                }
-                
+                const posAttr = this.points?.geometry.attributes.position;
+                if (posAttr) {
+                    const box = new THREE.Box3().setFromBufferAttribute(posAttr);
+                    if (!box.isEmpty()) {
+                        box.getCenter(this.cameraTarget);
+                        const size = box.getSize(new THREE.Vector3());
+                        const dist = Math.max(size.x, size.y, size.z) * 1.5;
+                        this.camera.position.copy(this.cameraTarget).add(new THREE.Vector3(0, dist * 0.5, dist));
+                    } else { this.cameraTarget.set(0, 0, 0); this.camera.position.set(5, 5, 5); }
+                } else { this.cameraTarget.set(0, 0, 0); this.camera.position.set(5, 5, 5); }
                 this.targetIndicator.position.copy(this.cameraTarget);
                 this.camera.lookAt(this.cameraTarget);
             }
@@ -1553,25 +1422,18 @@
                     document.getElementById('timeline-handle').style.left = `${progress}%`;
                 }
                 
+                const formatTime = s => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(Math.floor(s%60)).padStart(2,'0')}`;
                 const currentTime = this.frames.length > 0 ? (this.currentFrame / this.fps) : 0;
                 const totalTime = this.frames.length > 0 ? ((this.frames.length - 1) / this.fps) : 0;
-                document.getElementById('current-time').textContent = this.formatTime(currentTime);
-                document.getElementById('total-time').textContent = this.formatTime(totalTime);
-            }
-
-            formatTime(seconds) {
-                const totalSecs = Math.floor(seconds);
-                const mins = Math.floor(totalSecs / 60);
-                const secs = totalSecs % 60;
-                return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                document.getElementById('current-time').textContent = formatTime(currentTime);
+                document.getElementById('total-time').textContent = formatTime(totalTime);
             }
 
             animate() {
                 requestAnimationFrame(() => this.animate());
                 const now = performance.now();
                 if (this.lastTime) {
-                    const delta = now - this.lastTime;
-                    if (delta > 0) document.getElementById('fps-info').textContent = Math.round(1000 / delta);
+                    document.getElementById('fps-info').textContent = Math.round(1000 / (now - this.lastTime));
                 }
                 this.lastTime = now;
                 this.renderer.render(this.scene, this.camera);
