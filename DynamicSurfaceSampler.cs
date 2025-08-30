@@ -19,10 +19,11 @@ public class DynamicSurfaceSampler : MonoBehaviour
         public bool exactMatch;
     }
 
-    // *** NEW ***: A struct to hold all data for a single sampled point.
+    // *** MODIFIED ***: Added a 'normal' vector to the struct.
     private struct SampledPoint
     {
         public Vector3 position;
+        public Vector3 normal;
         public Color32 color;
         public string label;
     }
@@ -49,7 +50,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         for (int frame = 0; frame < totalFrames; frame++)
         {
-            // *** MODIFIED ***: Use the new SampledPoint struct list.
             List<SampledPoint> sampledPoints = new List<SampledPoint>();
 
             SampleScenePoints(sampledPoints);
@@ -61,7 +61,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
         Debug.Log("Sampling for current animation finished.");
     }
 
-    // *** MODIFIED ***: Simplified signature to pass one list.
     void SampleScenePoints(List<SampledPoint> sampledPoints)
     {
         Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
@@ -81,16 +80,19 @@ public class DynamicSurfaceSampler : MonoBehaviour
         }
     }
 
-    // *** MODIFIED ***: This is the core of the change. It now samples color.
+    // *** MODIFIED ***: Core logic updated to get and interpolate surface normals.
     void SampleMeshPointsUniform(Mesh mesh, Transform transform, string objectName, Bounds roomBounds, List<SampledPoint> sampledPoints)
     {
         if (mesh.vertexCount == 0) return;
 
         Vector3[] vertices = mesh.vertices;
         int[] triangles = mesh.triangles;
-        Vector2[] uvs = mesh.uv; // *** NEW ***: Get UV coordinates.
+        Vector2[] uvs = mesh.uv;
+        Vector3[] normals = mesh.normals; // Get normals from the mesh.
 
-        // *** NEW ***: Get the renderer and texture for color sampling.
+        // Check if the mesh actually has normals.
+        bool hasNormals = normals != null && normals.Length > 0;
+
         Renderer renderer = transform.GetComponent<Renderer>();
         Texture2D texture = null;
         if (renderer != null && renderer.sharedMaterial != null)
@@ -99,7 +101,7 @@ public class DynamicSurfaceSampler : MonoBehaviour
             if (texture != null && !texture.isReadable)
             {
                 Debug.LogWarning($"Texture on '{objectName}' is not marked as Read/Write. Colors may be incorrect. Please enable it in texture import settings.", texture);
-                texture = null; // Can't sample from a non-readable texture.
+                texture = null;
             }
         }
         
@@ -153,7 +155,7 @@ public class DynamicSurfaceSampler : MonoBehaviour
             Vector3 v1 = transform.TransformPoint(vertices[vertIndex1]);
             Vector3 v2 = transform.TransformPoint(vertices[vertIndex2]);
 
-            // *** MODIFIED ***: Generate barycentric coordinates here to reuse them for UV interpolation.
+            // Generate barycentric coordinates (u, v) to reuse for position, UVs, and normals.
             float u = Random.value;
             float v = Random.value;
             if (u + v > 1f) { u = 1f - u; v = 1f - v; }
@@ -161,25 +163,37 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
             if (roomBounds.Contains(sample))
             {
-                // *** NEW ***: Logic to calculate the color at the sampled point.
-                Color32 pointColor = Color.white; // Default color
+                // Interpolate Color
+                Color32 pointColor = Color.white;
                 if (texture != null && uvs.Length > 0)
                 {
                     Vector2 uv0 = uvs[vertIndex0];
                     Vector2 uv1 = uvs[vertIndex1];
                     Vector2 uv2 = uvs[vertIndex2];
-                    
-                    // Interpolate UV coordinates using the same barycentric coordinates
                     Vector2 interpolatedUV = uv0 + u * (uv1 - uv0) + v * (uv2 - uv0);
-                    
-                    // Get the color from the texture
                     pointColor = texture.GetPixelBilinear(interpolatedUV.x, interpolatedUV.y);
                 }
 
-                // *** MODIFIED ***: Add the complete SampledPoint data to the list.
+                // *** MODIFIED ***: Interpolate Normals
+                Vector3 pointNormal = Vector3.up; // Default normal if mesh has none
+                if (hasNormals)
+                {
+                    // Get the local-space normals of the triangle's vertices
+                    Vector3 n_local_0 = normals[vertIndex0];
+                    Vector3 n_local_1 = normals[vertIndex1];
+                    Vector3 n_local_2 = normals[vertIndex2];
+                    
+                    // Interpolate the local-space normals
+                    Vector3 interpolatedNormalLocal = (n_local_0 + u * (n_local_1 - n_local_0) + v * (n_local_2 - n_local_0)).normalized;
+                    
+                    // Transform the interpolated normal from local to world space and ensure it's a unit vector
+                    pointNormal = transform.TransformDirection(interpolatedNormalLocal);
+                }
+
                 sampledPoints.Add(new SampledPoint
                 {
                     position = sample,
+                    normal = pointNormal, // Assign the calculated normal
                     color = pointColor,
                     label = objectName
                 });
@@ -202,9 +216,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
         }
         return defaultPointsPerUnitArea;
     }
-
-    // This method is no longer needed as its logic was moved into SampleMeshPointsUniform
-    // Vector3 SamplePointOnTriangle(Vector3 v0, Vector3 v1, Vector3 v2) { ... }
 
     Bounds CalculateRoomBounds(string keyword)
     {
@@ -259,7 +270,7 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return bounds;
     }
     
-    // *** MODIFIED ***: Saves the new format with RGB and label data.
+    // *** MODIFIED ***: Updated PCD header and data line to include normals.
     void SaveFrameToPCD(List<SampledPoint> points, int frameIndex, string outputSubFolder)
     {
         string finalDirectory = Path.Combine(baseOutputDirectory, outputSubFolder);
@@ -272,13 +283,13 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         using (StreamWriter writer = new StreamWriter(path, false, Encoding.ASCII))
         {
+            // Update header to include normal fields
             writer.WriteLine("# .PCD v0.7 - Point Cloud Data file format");
             writer.WriteLine("VERSION 0.7");
-            // *** MODIFIED ***: Added rgb and changed label type
-            writer.WriteLine("FIELDS x y z rgb label"); 
-            writer.WriteLine("SIZE 4 4 4 4 4"); // Size of float, float, float, uint32, uint32 (for label ID)
-            writer.WriteLine("TYPE F F F U U"); // F=float, U=unsigned int
-            writer.WriteLine("COUNT 1 1 1 1 1");
+            writer.WriteLine("FIELDS x y z normal_x normal_y normal_z rgb label"); 
+            writer.WriteLine("SIZE 4 4 4 4 4 4 4 4");
+            writer.WriteLine("TYPE F F F F F F U U");
+            writer.WriteLine("COUNT 1 1 1 1 1 1 1 1");
             writer.WriteLine($"WIDTH {points.Count}");
             writer.WriteLine("HEIGHT 1");
             writer.WriteLine("VIEWPOINT 0 0 0 1 0 0 0");
@@ -289,15 +300,14 @@ public class DynamicSurfaceSampler : MonoBehaviour
             {
                 SampledPoint sp = points[i];
                 Vector3 p = sp.position;
+                Vector3 n = sp.normal; // Get the normal
                 Color32 c = sp.color;
 
-                // *** NEW ***: Pack R, G, B into a single 32-bit integer.
                 uint rgb = ((uint)c.r << 16) | ((uint)c.g << 8) | ((uint)c.b);
-                
-                // *** NEW ***: Use the hashcode of the label string as a numeric ID.
                 uint labelId = (uint)sp.label.GetHashCode();
 
-                writer.WriteLine($"{p.x} {p.y} {p.z} {rgb} {labelId}");
+                // Write the data line including the normal components
+                writer.WriteLine($"{p.x} {p.y} {p.z} {n.x} {n.y} {n.z} {rgb} {labelId}");
             }
         }
     }
