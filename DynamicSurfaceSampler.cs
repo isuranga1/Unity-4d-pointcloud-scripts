@@ -8,6 +8,8 @@ public class DynamicSurfaceSampler : MonoBehaviour
 {
     [Header("Sampling Settings")]
     public float defaultPointsPerUnitArea = 100f;
+    // *** NEW ***: Added a keyword to identify the dynamic object.
+    public string humanObjectKeyword = "human"; 
     public ObjectDensityOverride[] densityOverrides;
     public string roomObjectKeyword = "room";
 
@@ -19,7 +21,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
         public bool exactMatch;
     }
 
-    // *** MODIFIED ***: Added a 'normal' vector to the struct.
     private struct SampledPoint
     {
         public Vector3 position;
@@ -35,12 +36,16 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
     [Header("Randomization")]
     public int fixedRandomSeed = 1337;
+    
+    // *** NEW ***: A list to hold the static scene points, sampled only once.
+    private List<SampledPoint> staticSampledPoints;
 
     void Start()
     {
         // The BatchProcessor now controls when sampling starts.
     }
 
+    // *** MODIFIED ***: The main coroutine is updated for the new efficient logic.
     public IEnumerator StartSampling(string outputSubFolder)
     {
         float interval = 1f / captureFPS;
@@ -48,12 +53,26 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         Debug.Log($"Starting sampling for {captureDuration}s at {captureFPS} FPS. Saving to '{outputSubFolder}'.");
 
+        // --- Step 1: Perform the one-time scan of the static environment ---
+        Debug.Log("Performing initial scan of the static environment...");
+        staticSampledPoints = new List<SampledPoint>();
+        Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword); // Calculate bounds once
+        SampleStaticScene(staticSampledPoints, roomBounds);
+        Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+
+        // --- Step 2: Loop through frames, sampling only the dynamic object and combining ---
         for (int frame = 0; frame < totalFrames; frame++)
         {
-            List<SampledPoint> sampledPoints = new List<SampledPoint>();
+            // Create a list for the dynamic points for this specific frame.
+            List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
+            SampleDynamicObjects(dynamicPointsThisFrame, roomBounds);
 
-            SampleScenePoints(sampledPoints);
-            SaveFrameToPCD(sampledPoints, frame, outputSubFolder);
+            // Combine the persistent static points with the new dynamic points for this frame.
+            List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
+            combinedFramePoints.AddRange(dynamicPointsThisFrame);
+
+            // Save the combined point cloud.
+            SaveFrameToPCD(combinedFramePoints, frame, outputSubFolder);
 
             yield return new WaitForSeconds(interval);
         }
@@ -61,26 +80,67 @@ public class DynamicSurfaceSampler : MonoBehaviour
         Debug.Log("Sampling for current animation finished.");
     }
 
-    void SampleScenePoints(List<SampledPoint> sampledPoints)
+    // *** NEW ***: This method samples everything EXCEPT the dynamic (human) object.
+    void SampleStaticScene(List<SampledPoint> pointsList, Bounds roomBounds)
     {
-        Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
-
+        // Sample static meshes
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
         {
             if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
-            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, sampledPoints);
+            
+            // If the object's name contains the human keyword, skip it.
+            if (!string.IsNullOrEmpty(humanObjectKeyword) && mf.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower())) continue;
+            
+            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, pointsList);
         }
 
+        // It's unlikely for static objects to be SkinnedMeshRenderers, but we check just in case.
         foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
             if (!smr.gameObject.activeInHierarchy) continue;
+
+            // If the object's name contains the human keyword, skip it.
+            if (!string.IsNullOrEmpty(humanObjectKeyword) && smr.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower())) continue;
+
             Mesh bakedMesh = new Mesh();
             smr.BakeMesh(bakedMesh);
-            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, sampledPoints);
+            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, pointsList);
         }
     }
 
-    // *** MODIFIED ***: Core logic updated to get and interpolate surface normals.
+    // *** NEW ***: This method samples ONLY the dynamic (human) object.
+// *** NEW ***: This method samples ONLY the dynamic (human) object.
+    void SampleDynamicObjects(List<SampledPoint> pointsList, Bounds roomBounds)
+    {
+        // Dynamic objects are typically SkinnedMeshRenderers
+        foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
+        {
+            if (!smr.gameObject.activeInHierarchy) continue;
+
+            // Only sample the object if its name contains the human keyword.
+            if (!string.IsNullOrEmpty(humanObjectKeyword) && smr.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower()))
+            {
+                Mesh bakedMesh = new Mesh();
+                smr.BakeMesh(bakedMesh); // Bake the mesh at its current animation pose
+                SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, pointsList);
+            }
+        }
+        
+        // Also check MeshFilters in case the dynamic object is not skinned.
+        foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
+        {
+            if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
+            
+            if (!string.IsNullOrEmpty(humanObjectKeyword) && mf.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower()))
+            {
+                // *** THIS IS THE CORRECTED LINE ***
+                SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, pointsList);
+            }
+        }
+    }
+    // NOTE: The rest of your code (`SampleMeshPointsUniform`, `GetDensityForObject`, `CalculateRoomBounds`, `SaveFrameToPCD`)
+    // can remain exactly the same. They are generic enough to work with this new structure. I'm including them here for completeness.
+
     void SampleMeshPointsUniform(Mesh mesh, Transform transform, string objectName, Bounds roomBounds, List<SampledPoint> sampledPoints)
     {
         if (mesh.vertexCount == 0) return;
@@ -88,9 +148,8 @@ public class DynamicSurfaceSampler : MonoBehaviour
         Vector3[] vertices = mesh.vertices;
         int[] triangles = mesh.triangles;
         Vector2[] uvs = mesh.uv;
-        Vector3[] normals = mesh.normals; // Get normals from the mesh.
+        Vector3[] normals = mesh.normals; 
 
-        // Check if the mesh actually has normals.
         bool hasNormals = normals != null && normals.Length > 0;
 
         Renderer renderer = transform.GetComponent<Renderer>();
@@ -155,7 +214,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
             Vector3 v1 = transform.TransformPoint(vertices[vertIndex1]);
             Vector3 v2 = transform.TransformPoint(vertices[vertIndex2]);
 
-            // Generate barycentric coordinates (u, v) to reuse for position, UVs, and normals.
             float u = Random.value;
             float v = Random.value;
             if (u + v > 1f) { u = 1f - u; v = 1f - v; }
@@ -163,7 +221,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
             if (roomBounds.Contains(sample))
             {
-                // Interpolate Color
                 Color32 pointColor = Color.white;
                 if (texture != null && uvs.Length > 0)
                 {
@@ -174,26 +231,22 @@ public class DynamicSurfaceSampler : MonoBehaviour
                     pointColor = texture.GetPixelBilinear(interpolatedUV.x, interpolatedUV.y);
                 }
 
-                // *** MODIFIED ***: Interpolate Normals
-                Vector3 pointNormal = Vector3.up; // Default normal if mesh has none
+                Vector3 pointNormal = Vector3.up;
                 if (hasNormals)
                 {
-                    // Get the local-space normals of the triangle's vertices
                     Vector3 n_local_0 = normals[vertIndex0];
                     Vector3 n_local_1 = normals[vertIndex1];
                     Vector3 n_local_2 = normals[vertIndex2];
                     
-                    // Interpolate the local-space normals
                     Vector3 interpolatedNormalLocal = (n_local_0 + u * (n_local_1 - n_local_0) + v * (n_local_2 - n_local_0)).normalized;
                     
-                    // Transform the interpolated normal from local to world space and ensure it's a unit vector
                     pointNormal = transform.TransformDirection(interpolatedNormalLocal);
                 }
 
                 sampledPoints.Add(new SampledPoint
                 {
                     position = sample,
-                    normal = pointNormal, // Assign the calculated normal
+                    normal = pointNormal,
                     color = pointColor,
                     label = objectName
                 });
@@ -270,7 +323,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return bounds;
     }
     
-    // *** MODIFIED ***: Updated PCD header and data line to include normals.
     void SaveFrameToPCD(List<SampledPoint> points, int frameIndex, string outputSubFolder)
     {
         string finalDirectory = Path.Combine(baseOutputDirectory, outputSubFolder);
@@ -283,7 +335,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
 
         using (StreamWriter writer = new StreamWriter(path, false, Encoding.ASCII))
         {
-            // Update header to include normal fields
             writer.WriteLine("# .PCD v0.7 - Point Cloud Data file format");
             writer.WriteLine("VERSION 0.7");
             writer.WriteLine("FIELDS x y z normal_x normal_y normal_z rgb label"); 
@@ -300,14 +351,12 @@ public class DynamicSurfaceSampler : MonoBehaviour
             {
                 SampledPoint sp = points[i];
                 Vector3 p = sp.position;
-                Vector3 n = sp.normal; // Get the normal
+                Vector3 n = sp.normal;
                 Color32 c = sp.color;
 
                 uint rgb = ((uint)c.r << 16) | ((uint)c.g << 8) | ((uint)c.b);
-                // Replace spaces in the label with an underscore to prevent breaking the PCD format.
                 string safeLabel = sp.label.Replace(' ', '_');
-
-                // Write the original (safe) label string instead of the hash code.
+                
                 writer.WriteLine($"{p.x} {p.y} {p.z} {n.x} {n.y} {n.z} {rgb} {safeLabel}");
             }
         }
