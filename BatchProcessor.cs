@@ -35,12 +35,12 @@ public class BatchProcessor : MonoBehaviour
     public string initialOffsetsConfigName = "animation_offsets.json";
     [Tooltip("The name of the JSON file for reading/writing the list of excluded animations.")]
     public string excludedAnimationsConfigName = "excluded_animations.json";
-    [Tooltip("Name of the environment folder inside the base output directory (e.g., 'bedroom').")]
-    public string environmentFolderName = "bedroom";
+    [Tooltip("Name of the environment folder inside the base output directory (e.g., 'Bathroom').")]
+    public string environmentFolderName = "bathroom";
+    [Tooltip("The specific number for the environment instance (e.g., '001' for 'Bathroom_001').")]
+    public string environmentFolderNumber = "001";
     [Tooltip("The name of the scene folder where final offsets and output will be saved.")]
     public string sceneFolderName = "scene1";
-    [Tooltip("Name of the folder for miscellaneous data like the exclusion list (e.g., 'OtherData').")]
-    public string otherDataFolderName = "OtherData";
     [Tooltip("Should the application quit after the batch process is complete?")]
     public bool quitOnFinish = true;
 
@@ -62,6 +62,15 @@ public class BatchProcessor : MonoBehaviour
     private bool isDirty = false;
     private int activeCameraIndex = 0;
     private string currentAnimationDescription = "No description available.";
+
+    // --- Helper properties to generate the new folder structure consistently ---
+    /// <summary>Formats the environment name with its number, e.g., "Bathroom_001".</summary>
+    private string FormattedEnvironmentName => $"{environmentFolderName}_{environmentFolderNumber}";
+    /// <summary>Gets the base output path for the current scene, e.g., "Scans/Bathroom/Bathroom_001/scene1".</summary>
+    private string BaseOutputPathForScene => Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, FormattedEnvironmentName, sceneFolderName);
+    /// <summary>Gets the directory path for summary reports, e.g., "reports/Bathroom/Bathroom_001/scene1".</summary>
+    private string ReportDirectoryPath => Path.Combine("reports", environmentFolderName, FormattedEnvironmentName, sceneFolderName);
+
 
     void Start()
     {
@@ -100,7 +109,6 @@ public class BatchProcessor : MonoBehaviour
     private void SwitchToNextCamera()
     {
         if (cameras.Count <= 1) return;
-
         activeCameraIndex = (activeCameraIndex + 1) % cameras.Count;
         SetActiveCamera(activeCameraIndex);
         Debug.Log($"Switched to camera: {cameras[activeCameraIndex].name}");
@@ -109,7 +117,6 @@ public class BatchProcessor : MonoBehaviour
     private void SetActiveCamera(int index)
     {
         if (cameras.Count == 0 || index < 0 || index >= cameras.Count) return;
-
         for (int i = 0; i < cameras.Count; i++)
         {
             if (cameras[i] != null)
@@ -123,26 +130,21 @@ public class BatchProcessor : MonoBehaviour
     private void SnapToFloor()
     {
         if (smplPlayer == null) return;
-
         Transform armatureTransform = smplPlayer.transform.Find("Armature"); 
-
         if (armatureTransform == null)
         {
             Debug.LogError("Could not find 'Armature' child object on the SMPL model. Cannot snap to floor.");
             return;
         }
-
         RaycastHit hit;
         if (Physics.Raycast(armatureTransform.position, Vector3.down, out hit, 10f, floorLayer))
         {
             float distanceToFloor = armatureTransform.position.y - hit.point.y;
             liveOffset.y -= distanceToFloor;
-
             string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
             tunedOffsets[animFileName] = liveOffset;
             smplPlayer.UpdateLiveOffset(liveOffset);
             isDirty = true;
-
             Debug.Log($"Snapped Armature to floor. Adjusted Y-offset by {-distanceToFloor:F3}. New Y-offset: {liveOffset.y:F3}");
         }
         else
@@ -177,7 +179,7 @@ public class BatchProcessor : MonoBehaviour
         foreach (string filePath in animationFiles)
         {
             string animFileName = Path.GetFileNameWithoutExtension(filePath);
-            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName, "animation_offsets.json");
+            string offsetFilePath = Path.Combine(BaseOutputPathForScene, animFileName, "animation_offsets.json");
 
             if (File.Exists(offsetFilePath))
             {
@@ -208,7 +210,7 @@ public class BatchProcessor : MonoBehaviour
     
     private void LoadExcludedAnimations()
     {
-        string configPath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, otherDataFolderName, sceneFolderName, excludedAnimationsConfigName);
+        string configPath = Path.Combine(ReportDirectoryPath, excludedAnimationsConfigName);
         if (File.Exists(configPath))
         {
             try
@@ -290,14 +292,12 @@ public class BatchProcessor : MonoBehaviour
         if (currentAnimationIndex < 0) return;
 
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
-
         Vector3 offset = liveOffset;
         float rotation = liveRotationY;
-
         tunedOffsets[animFileName] = offset;
         tunedRotations[animFileName] = rotation;
 
-        string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName);
+        string outputDirectory = Path.Combine(BaseOutputPathForScene, animFileName);
         string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
         Directory.CreateDirectory(outputDirectory);
 
@@ -309,7 +309,6 @@ public class BatchProcessor : MonoBehaviour
         Debug.Log($"Saved current offset for '{animFileName}' to: {savePath}");
     }
 
-    // *** MODIFIED ***: This method now only saves offsets for animations that are currently included (not excluded).
     private void SaveAllModifiedOffsets()
     {
         if (tunedOffsets.Count == 0)
@@ -322,7 +321,6 @@ public class BatchProcessor : MonoBehaviour
         int savedCount = 0;
         foreach (var animFileName in tunedOffsets.Keys)
         {
-            // Only save the offset if the animation is marked as included.
             if (includedAnimations.ContainsKey(animFileName) && includedAnimations[animFileName])
             {
                 if (tunedRotations.ContainsKey(animFileName))
@@ -330,7 +328,7 @@ public class BatchProcessor : MonoBehaviour
                     Vector3 offset = tunedOffsets[animFileName];
                     float rotation = tunedRotations[animFileName];
 
-                    string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName);
+                    string outputDirectory = Path.Combine(BaseOutputPathForScene, animFileName);
                     string savePath = Path.Combine(outputDirectory, "animation_offsets.json");
                     Directory.CreateDirectory(outputDirectory);
 
@@ -352,12 +350,11 @@ public class BatchProcessor : MonoBehaviour
 
     private void SaveExcludedAnimationsConfig()
     {
-        string outputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, otherDataFolderName, sceneFolderName);
+        string outputDirectory = ReportDirectoryPath;
         string savePath = Path.Combine(outputDirectory, excludedAnimationsConfigName);
         try
         {
             Directory.CreateDirectory(outputDirectory);
-
             JSONObject rootNode = new JSONObject();
             JSONArray excludedArray = new JSONArray();
 
@@ -383,10 +380,12 @@ public class BatchProcessor : MonoBehaviour
     {
         if (currentState != EditorState.Tuning || animationFiles.Count == 0) return;
         
-        GUIStyle descriptionStyle = new GUIStyle(GUI.skin.box);
-        descriptionStyle.alignment = TextAnchor.UpperLeft;
-        descriptionStyle.wordWrap = true;
-        descriptionStyle.padding = new RectOffset(5, 5, 5, 5);
+        GUIStyle descriptionStyle = new GUIStyle(GUI.skin.box)
+        {
+            alignment = TextAnchor.UpperLeft,
+            wordWrap = true,
+            padding = new RectOffset(5, 5, 5, 5)
+        };
 
         GUI.Box(new Rect(10, 10, 330, 440), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
@@ -495,7 +494,7 @@ public class BatchProcessor : MonoBehaviour
             Vector3 finalOffset = Vector3.zero;
             float finalRotation = 0f;
             string description = "No description found.";
-            string offsetFilePath = Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, sceneFolderName, animFileName, "animation_offsets.json");
+            string offsetFilePath = Path.Combine(BaseOutputPathForScene, animFileName, "animation_offsets.json");
             JSONNode animJson = null; 
             try
             {
@@ -532,26 +531,23 @@ public class BatchProcessor : MonoBehaviour
             if (animJson["prompt_segments"] != null)
             {
                 JSONArray newSegments = new JSONArray();
-
                 foreach (var segmentNode in animJson["prompt_segments"].AsArray)
                 {
                     var segment = segmentNode.Value;
-
                     JSONObject segObj = new JSONObject();
                     segObj["prompt"] = segment["prompt"];
                     segObj["label"] = segment["label"];
                     segObj["start_frame"] = segment["start_frame"];
                     segObj["end_frame"] = segment["end_frame"];
                     segObj["num_frames"] = segment["num_frames"];
-
                     newSegments.Add(segObj);
                 }
-
                 individualReport["prompt_segments"] = newSegments;
             }
 
-            string samplerSubfolderPath = Path.Combine(environmentFolderName, sceneFolderName, animFileName);
-            string finalOutputDirectory = Path.Combine(surfaceSampler.baseOutputDirectory, samplerSubfolderPath);
+            string samplerSubfolderPath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName, animFileName);
+            string finalOutputDirectory = Path.Combine(BaseOutputPathForScene, animFileName);
+            
             SaveIndividualReport(individualReport, finalOutputDirectory);
 
             string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
@@ -562,7 +558,7 @@ public class BatchProcessor : MonoBehaviour
             yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath));
             sceneRecorder.EndRecording();
             Debug.Log($"--- Finished batch recording for: {animFileName} ---");
-            Debug.Log($"--- Saved the pointclouds in  {finalOutputDirectory} ---");
+            Debug.Log($"--- Saved the pointclouds in {finalOutputDirectory} ---");
         }
         
         JSONArray excludedAnimationsReport = new JSONArray();
@@ -578,7 +574,7 @@ public class BatchProcessor : MonoBehaviour
         {
             Debug.Log("Quitting application.");
 #if UNITY_EDITOR
-            UnityEditor.EditorApplication.isPlaying = false;
+            EditorApplication.isPlaying = false;
 #endif
         }
     }
@@ -592,6 +588,7 @@ public class BatchProcessor : MonoBehaviour
         JSONObject report = new JSONObject();
         report["reportGenerated"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
         report["environmentName"] = environmentFolderName;
+        report["environmentInstance"] = FormattedEnvironmentName; 
         report["sceneName"] = sceneFolderName;
 
         JSONObject batchSettings = new JSONObject();
@@ -637,7 +634,7 @@ public class BatchProcessor : MonoBehaviour
             report["cameraSettings"] = cameraSettings;
         }
 
-#if UNITY_EDITOR
+    #if UNITY_EDITOR
         JSONObject packagesReport = new JSONObject();
         string manifestPath = Path.Combine(Directory.GetCurrentDirectory(), "Packages", "manifest.json");
         if (File.Exists(manifestPath))
@@ -673,92 +670,88 @@ public class BatchProcessor : MonoBehaviour
         if (sceneRootObject == null)
         {
             Debug.LogError($"Scene reporting failed: Could not find the root object named '{sceneRootObjectName}'.");
+            sceneObjectsReport["error"] = $"Scene root object '{sceneRootObjectName}' not found.";
         }
         else if (!sceneRootObject.activeInHierarchy)
         {
             Debug.LogWarning($"Scene reporting skipped: The root object '{sceneRootObjectName}' is inactive.");
+            sceneObjectsReport["status"] = $"Object '{sceneRootObjectName}' is inactive.";
         }
         else
         {
-            string[] categories = { "Room", "Furniture", "Objects" };
-            foreach (string categoryName in categories)
+            JSONObject rootInfo = new JSONObject();
+            rootInfo["instanceName"] = sceneRootObject.name;
+            rootInfo["position"] = new JSONObject { ["x"] = sceneRootObject.transform.position.x, ["y"] = sceneRootObject.transform.position.y, ["z"] = sceneRootObject.transform.position.z };
+            rootInfo["rotation"] = new JSONObject { ["x"] = sceneRootObject.transform.eulerAngles.x, ["y"] = sceneRootObject.transform.eulerAngles.y, ["z"] = sceneRootObject.transform.eulerAngles.z };
+            rootInfo["scale"] = new JSONObject { ["x"] = sceneRootObject.transform.localScale.x, ["y"] = sceneRootObject.transform.localScale.y, ["z"] = sceneRootObject.transform.localScale.z };
+            sceneObjectsReport["rootObject"] = rootInfo;
+
+            JSONArray childrenArray = new JSONArray();
+            foreach (Transform child in sceneRootObject.transform)
             {
-                Transform categoryTransform = sceneRootObject.transform.Find(categoryName);
-                if (categoryTransform == null || !categoryTransform.gameObject.activeInHierarchy)
+                if (!child.gameObject.activeInHierarchy) continue;
+
+                JSONObject childInfo = new JSONObject();
+                childInfo["instanceName"] = child.name;
+                childInfo["position"] = new JSONObject { ["x"] = child.position.x, ["y"] = child.position.y, ["z"] = child.position.z };
+                childInfo["rotation"] = new JSONObject { ["x"] = child.eulerAngles.x, ["y"] = child.eulerAngles.y, ["z"] = child.eulerAngles.z };
+                childInfo["scale"] = new JSONObject { ["x"] = child.localScale.x, ["y"] = child.localScale.y, ["z"] = child.localScale.z };
+
+                if (PrefabUtility.IsPartOfAnyPrefab(child.gameObject))
                 {
-                    Debug.LogWarning($"In '{sceneRootObjectName}', could not find or inactive category object '{categoryName}'. Skipping.");
-                    continue;
-                }
-
-                JSONArray childrenArray = new JSONArray();
-                foreach (Transform child in categoryTransform)
-                {
-                    if (!child.gameObject.activeInHierarchy) continue;
-
-                    JSONObject childInfo = new JSONObject();
-                    childInfo["instanceName"] = child.name;
-                    childInfo["position"] = new JSONObject { ["x"] = child.position.x, ["y"] = child.position.y, ["z"] = child.position.z };
-                    childInfo["rotation"] = new JSONObject { ["x"] = child.eulerAngles.x, ["y"] = child.eulerAngles.y, ["z"] = child.eulerAngles.z };
-                    childInfo["scale"] = new JSONObject { ["x"] = child.localScale.x, ["y"] = child.localScale.y, ["z"] = child.localScale.z };
-
-                    if (PrefabUtility.IsPartOfAnyPrefab(child.gameObject))
+                    childInfo["assetPath"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(child.gameObject);
+                    JSONArray overrides = new JSONArray();
+                    foreach (var added in PrefabUtility.GetAddedComponents(child.gameObject))
                     {
-                        childInfo["assetPath"] = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(child.gameObject);
-                        JSONArray overrides = new JSONArray();
-                        foreach (var added in PrefabUtility.GetAddedComponents(child.gameObject))
+                        overrides.Add(new JSONObject { ["type"] = "Added Component", ["component"] = added.GetType().FullName });
+                    }
+                    PropertyModification[] modifications = PrefabUtility.GetPropertyModifications(child.gameObject);
+                    if (modifications != null)
+                    {
+                        foreach (var mod in modifications)
                         {
-                            overrides.Add(new JSONObject { ["type"] = "Added Component", ["component"] = added.GetType().FullName });
-                        }
-                        PropertyModification[] modifications = PrefabUtility.GetPropertyModifications(child.gameObject);
-                        if (modifications != null)
-                        {
-                            foreach (var mod in modifications)
+                            if (mod.target != null)
                             {
-                                if (mod.target != null)
-                                {
-                                    overrides.Add(new JSONObject { 
-                                        ["type"] = "Modified Property", 
-                                        ["component"] = mod.target.GetType().FullName,
-                                        ["property"] = mod.propertyPath,
-                                        ["value"] = mod.value
-                                    });
-                                }
+                                overrides.Add(new JSONObject { 
+                                    ["type"] = "Modified Property", 
+                                    ["component"] = mod.target.GetType().FullName,
+                                    ["property"] = mod.propertyPath,
+                                    ["value"] = mod.value
+                                });
                             }
                         }
-                        if(overrides.Count > 0)
-                        {
-                            childInfo["overrides"] = overrides;
-                        }
+                    }
+                    if(overrides.Count > 0)
+                    {
+                        childInfo["overrides"] = overrides;
+                    }
+                }
+                else
+                {
+                    JSONObject details = new JSONObject();
+                    details["status"] = "Not a Prefab";
+                    MeshFilter mf = child.GetComponent<MeshFilter>();
+                    if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Built-in"))
+                    {
+                        details["reason"] = "Primitive Shape";
+                        details["shape"] = mf.sharedMesh.name.Replace("Built-in\\/", "");
+                    }
+                    else if (child.GetComponents<Component>().Length == 1 && child.childCount > 0)
+                    {
+                        details["reason"] = "Organizational Object";
                     }
                     else
                     {
-                        JSONObject details = new JSONObject();
-                        details["status"] = "Not a Prefab";
-
-                        MeshFilter mf = child.GetComponent<MeshFilter>();
-                        
-                        if (mf != null && mf.sharedMesh != null && mf.sharedMesh.name.StartsWith("Built-in"))
-                        {
-                            details["reason"] = "Primitive Shape";
-                            details["shape"] = mf.sharedMesh.name.Replace("Built-in\\/", "");
-                        }
-                        else if (child.GetComponents<Component>().Length == 1 && child.childCount > 0)
-                        {
-                            details["reason"] = "Organizational Object";
-                        }
-                        else
-                        {
-                            details["reason"] = "Generic GameObject";
-                        }
-                        childInfo["assetPath"] = details;
+                        details["reason"] = "Generic GameObject";
                     }
-                    childrenArray.Add(childInfo);
+                    childInfo["assetPath"] = details;
                 }
-                sceneObjectsReport[categoryName] = childrenArray;
+                childrenArray.Add(childInfo);
             }
+            sceneObjectsReport["childObjects"] = childrenArray;
         }
         report["sceneObjects"] = sceneObjectsReport;
-#endif
+    #endif
         return report;
     }
 
@@ -766,7 +759,7 @@ public class BatchProcessor : MonoBehaviour
     {
         try
         {
-            string reportDirectory = Path.Combine("reports", environmentFolderName, sceneFolderName);
+            string reportDirectory = ReportDirectoryPath;
             Directory.CreateDirectory(reportDirectory);
             string reportPath = Path.Combine(reportDirectory, "scene_summary_report.json");
             File.WriteAllText(reportPath, report.ToString(4));
