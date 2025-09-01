@@ -671,6 +671,14 @@ public class BatchProcessor : MonoBehaviour
             smplPlayer.loop = false;
         }
 
+        // Before processing any animations, save the static scene point cloud if requested.
+        if (surfaceSampler != null && surfaceSampler.saveStaticPointCloudSeparately)
+        {
+            // Construct the path for the scene, but without the animation-specific subfolder.
+            string scenePath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName);
+            surfaceSampler.CaptureAndSaveStaticPointCloud(scenePath);
+        }
+
         JSONObject summaryReport = CreateReportHeader();
         JSONArray processedAnimationsReport = new JSONArray();
         summaryReport["processedAnimations"] = processedAnimationsReport;
@@ -856,6 +864,7 @@ public class BatchProcessor : MonoBehaviour
         samplerSettings["captureFPS"] = surfaceSampler.captureFPS;
         samplerSettings["baseOutputDirectory"] = surfaceSampler.baseOutputDirectory;
         samplerSettings["fixedRandomSeed"] = surfaceSampler.fixedRandomSeed;
+        samplerSettings["saveStaticPointCloudSeparately"] = surfaceSampler.saveStaticPointCloudSeparately;
         report["surfaceSamplerSettings"] = samplerSettings;
         
         JSONObject recorderSettings = new JSONObject();

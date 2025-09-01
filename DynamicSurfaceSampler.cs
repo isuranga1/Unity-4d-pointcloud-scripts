@@ -33,6 +33,10 @@ public class DynamicSurfaceSampler : MonoBehaviour
     public float captureFPS = 10f;
     public string baseOutputDirectory = "Scans";
 
+    [Header("Output Settings")]
+    [Tooltip("If true, saves a single point cloud of the static scene to 'scene_point_cloud/scene.pcd' before processing animations.")]
+    public bool saveStaticPointCloudSeparately = false;
+
     [Header("Randomization")]
     public int fixedRandomSeed = 1337;
     
@@ -76,12 +80,27 @@ public class DynamicSurfaceSampler : MonoBehaviour
         if (totalFramesToCapture <= 0) totalFramesToCapture = 1;
 
         Debug.Log($"Starting synchronized capture. Source FPS: {animationFPS}, Capture FPS: {this.captureFPS}. Capturing {totalFramesToCapture} frames.");
+        
+        Bounds currentRoomBounds = GetRoomBounds();
 
-        Debug.Log("Performing initial scan of the static environment...");
-        staticSampledPoints = new List<SampledPoint>();
-        Bounds currentRoomBounds = GetRoomBounds(); // Use the getter to ensure it's calculated
-        SampleStaticScene(staticSampledPoints, currentRoomBounds);
-        Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+        // Only sample the static scene here if we are NOT saving it separately.
+        if (!saveStaticPointCloudSeparately)
+        {
+            Debug.Log("Performing initial scan of the static environment to be included in each frame...");
+            staticSampledPoints = new List<SampledPoint>();
+            SampleStaticScene(staticSampledPoints, currentRoomBounds);
+            Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+        }
+        else
+        {
+            // If we are saving separately, ensure the static list is empty for this animation run.
+            if(staticSampledPoints == null)
+            {
+                staticSampledPoints = new List<SampledPoint>();
+            }
+            staticSampledPoints.Clear();
+            Debug.Log("Skipping per-animation static scan. Dynamic points will be saved alone.");
+        }
 
         for (int captureFrame = 0; captureFrame < totalFramesToCapture; captureFrame++)
         {
@@ -93,6 +112,7 @@ public class DynamicSurfaceSampler : MonoBehaviour
             List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
             SampleDynamicObjects(dynamicPointsThisFrame, currentRoomBounds);
             
+            // Always start with a copy of the (potentially empty) static points list
             List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
             combinedFramePoints.AddRange(dynamicPointsThisFrame);
             SaveFrameToPCD(combinedFramePoints, captureFrame, outputSubFolder);
@@ -100,6 +120,34 @@ public class DynamicSurfaceSampler : MonoBehaviour
         
         Debug.Log($"Synchronized capture finished. Captured {totalFramesToCapture} frames.");
     }
+
+    /// <summary>
+    /// Captures the static environment and saves it to a single PCD file.
+    /// This should be called by the BatchProcessor before starting the animation loop.
+    /// </summary>
+    /// <param name="scenePath">The relative path for the scene, e.g., "Bathroom/Bathroom_001/scene1".</param>
+    public void CaptureAndSaveStaticPointCloud(string scenePath)
+    {
+        if (!saveStaticPointCloudSeparately)
+        {
+            Debug.LogWarning("'Save Static Point Cloud Separately' is disabled in DynamicSurfaceSampler, but a save was requested. Skipping.");
+            return;
+        }
+
+        Debug.Log("Performing a separate scan of the static environment...");
+        List<SampledPoint> points = new List<SampledPoint>();
+        Bounds currentRoomBounds = GetRoomBounds();
+        SampleStaticScene(points, currentRoomBounds);
+
+        string outputDirectory = Path.Combine(baseOutputDirectory, scenePath, "scene_point_cloud");
+        string filename = "scene.pcd";
+        string fullPath = Path.Combine(outputDirectory, filename);
+
+        Debug.Log($"Saving static scene point cloud with {points.Count} points to {fullPath}");
+        SavePCD(points, fullPath);
+        Debug.Log("Static scene scan and save complete.");
+    }
+
     void SampleStaticScene(List<SampledPoint> pointsList, Bounds bounds)
     {
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
@@ -325,18 +373,27 @@ public class DynamicSurfaceSampler : MonoBehaviour
     void SaveFrameToPCD(List<SampledPoint> points, int frameIndex, string outputSubFolder)
     {
         string finalDirectory = Path.Combine(baseOutputDirectory, outputSubFolder);
-
-        if (!Directory.Exists(finalDirectory))
-            Directory.CreateDirectory(finalDirectory);
-
         string filename = $"frame_{frameIndex:D3}.pcd";
         string path = Path.Combine(finalDirectory, filename);
-
-        using (StreamWriter writer = new StreamWriter(path, false, Encoding.ASCII))
+        SavePCD(points, path);
+    }
+    
+    /// <summary>
+    /// Generic method to save a list of points to a PCD file at a specified full path.
+    /// </summary>
+    /// <param name="points">The list of points to save.</param>
+    /// <param name="fullPath">The complete file path, including filename and extension.</param>
+    void SavePCD(List<SampledPoint> points, string fullPath)
+    {
+        string directory = Path.GetDirectoryName(fullPath);
+        if (directory != null && !Directory.Exists(directory))
+            Directory.CreateDirectory(directory);
+        
+        using (StreamWriter writer = new StreamWriter(fullPath, false, Encoding.ASCII))
         {
             writer.WriteLine("# .PCD v0.7 - Point Cloud Data file format");
             writer.WriteLine("VERSION 0.7");
-            writer.WriteLine("FIELDS x y z normal_x normal_y normal_z rgb label"); 
+            writer.WriteLine("FIELDS x y z normal_x normal_y normal_z rgb label");
             writer.WriteLine("SIZE 4 4 4 4 4 4 4 4");
             writer.WriteLine("TYPE F F F F F F U U");
             writer.WriteLine("COUNT 1 1 1 1 1 1 1 1");

@@ -818,7 +818,7 @@
                     if (filename.toLowerCase().match(/\.(ply|xyz|pcd|txt)$/)) {
                         seedData.staticCloudFile = file;
                     }
-                } else if (subfolder.startsWith('prompt_')) {
+                } else if (subfolder.startsWith('prompt_') || subfolder.startsWith('sequence')) {
                     const promptName = subfolder;
                     if (!seedData.prompts[promptName]) {
                         seedData.prompts[promptName] = { 
