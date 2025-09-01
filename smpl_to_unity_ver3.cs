@@ -21,13 +21,14 @@ public class SMPLAnimationPlayer : MonoBehaviour
     // Animation data
     private AnimationData animData;
     private float currentTime = 0f;
-    
+
     // *** MODIFIED ***: Converted the private 'isPlaying' variable into a public property
     // Other scripts can now read this value to know if the animation is running.
     public bool IsPlaying { get; private set; } = false;
-
+    // *** NEW ***: A flag to disable the Update-driven playback during batch processing.
+    public bool IsInBatchMode { get; set; } = false;
     private Transform[] bones;
-    
+
     private Vector3 modelBaseInitialPosition;
     private Vector3 modelBaseInitialRotation;
     private Vector3 currentPositionalOffset;
@@ -71,8 +72,8 @@ public class SMPLAnimationPlayer : MonoBehaviour
 
     void Update()
     {
-        // *** MODIFIED ***: Using the new public property
-        if (IsPlaying && animData != null)
+        // *** MODIFIED ***: Only run the automatic playback if NOT in batch mode.
+        if (!IsInBatchMode && IsPlaying && animData != null)
         {
             currentTime += Time.deltaTime * playbackSpeed;
             float duration = animData.frameCount / (float)animData.fps;
@@ -98,7 +99,7 @@ public class SMPLAnimationPlayer : MonoBehaviour
     {
         this.currentPositionalOffset = newPositionalOffset;
     }
-    
+
     public void UpdateLiveRotation(float newRotationY)
     {
         this.currentAdditionalRotationY = newRotationY;
@@ -115,20 +116,20 @@ public class SMPLAnimationPlayer : MonoBehaviour
             var transNode = json["trans"];
             var posesNode = json["poses"];
             animData.frameCount = transNode.Count;
-            
+
             animData.translations = new Vector3[animData.frameCount];
             for (int frame = 0; frame < animData.frameCount; frame++)
             {
                 float jsonX = transNode[frame][0];
-                float jsonZ = transNode[frame][1]; 
-                float jsonY = transNode[frame][2]; 
+                float jsonZ = transNode[frame][1];
+                float jsonY = transNode[frame][2];
                 jsonY -= yOffset;
                 var mayaPos = new Vector3(jsonX, jsonZ, jsonY);
                 animData.translations[frame] = ConvertMayaToUnity(mayaPos);
             }
 
             animationStartOffset = animData.frameCount > 0 ? animData.translations[0] : Vector3.zero;
-            
+
             animData.poses = new Quaternion[animData.frameCount, 24];
             for (int frame = 0; frame < animData.frameCount; frame++)
             {
@@ -148,39 +149,39 @@ public class SMPLAnimationPlayer : MonoBehaviour
         catch (Exception e) { Debug.LogError($"Failed to load animation: {e.Message}"); }
     }
 
-    void ApplyFrame()
-    {
-        if (animData == null) return;
+    // void ApplyFrame()
+    // {
+    //     if (animData == null) return;
 
-        int frame = Mathf.FloorToInt(currentTime * animData.fps);
-        frame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
-        
-        Vector3 currentAnimTranslation = animData.translations[frame];
-        Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
-        
-        Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
-        Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
+    //     int frame = Mathf.FloorToInt(currentTime * animData.fps);
+    //     frame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
 
-        Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
+    //     Vector3 currentAnimTranslation = animData.translations[frame];
+    //     Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
 
-        Vector3 newPosition = finalStartPosition + rotatedDisplacement;
-        transform.localPosition = newPosition;
+    //     Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
+    //     Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
 
-        for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
-        {
-            string boneName = bones[boneIndex].name;
-            if (BoneMapping.TryGetValue(boneName, out int jointIndex))
-            {
-                bones[boneIndex].localEulerAngles = Vector3.zero;
-                if (boneName == "Pelvis")
-                {
-                    bones[boneIndex].Rotate(-90, 0, 0, Space.Self);
-                }
-                bones[boneIndex].localRotation *= animData.poses[frame, jointIndex];
-            }
-        }
-    }
-    
+    //     Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
+
+    //     Vector3 newPosition = finalStartPosition + rotatedDisplacement;
+    //     transform.localPosition = newPosition;
+
+    //     for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
+    //     {
+    //         string boneName = bones[boneIndex].name;
+    //         if (BoneMapping.TryGetValue(boneName, out int jointIndex))
+    //         {
+    //             bones[boneIndex].localEulerAngles = Vector3.zero;
+    //             if (boneName == "Pelvis")
+    //             {
+    //                 bones[boneIndex].Rotate(-90, 0, 0, Space.Self);
+    //             }
+    //             bones[boneIndex].localRotation *= animData.poses[frame, jointIndex];
+    //         }
+    //     }
+    // }
+
     Vector3 ConvertMayaToUnity(Vector3 mayaPos)
     {
         return new Vector3(-mayaPos.x, mayaPos.z, -mayaPos.y);
@@ -206,4 +207,49 @@ public class SMPLAnimationPlayer : MonoBehaviour
         currentTime = 0f;
         if (animData != null) ApplyFrame();
     }
+    
+    // *** NEW ***: A public method to allow external scripts to set the pose for a specific frame.
+    public void SetPoseForFrame(int frame)
+    {
+        if (animData == null) return;
+
+        // Clamp the frame to be within the valid range.
+        int clampedFrame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
+        
+        // The following logic is moved from your old ApplyFrame() method,
+        // but now it uses the specific 'clampedFrame' we provide.
+        Vector3 currentAnimTranslation = animData.translations[clampedFrame];
+        Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
+        
+        Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
+        Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
+
+        Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
+        Vector3 newPosition = finalStartPosition + rotatedDisplacement;
+        transform.localPosition = newPosition;
+
+        for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
+        {
+            string boneName = bones[boneIndex].name;
+            if (BoneMapping.TryGetValue(boneName, out int jointIndex))
+            {
+                bones[boneIndex].localEulerAngles = Vector3.zero;
+                if (boneName == "Pelvis")
+                {
+                    bones[boneIndex].Rotate(-90, 0, 0, Space.Self);
+                }
+                bones[boneIndex].localRotation *= animData.poses[clampedFrame, jointIndex];
+            }
+        }
+    }
+
+    // Keep your original ApplyFrame() private for the interactive mode to use.
+    void ApplyFrame()
+    {
+        if (animData == null) return;
+        int frame = Mathf.FloorToInt(currentTime * animData.fps);
+        SetPoseForFrame(frame); // It can now just call our new, robust method.
+    }
+
 }
+

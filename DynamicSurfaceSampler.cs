@@ -52,53 +52,53 @@ public class DynamicSurfaceSampler : MonoBehaviour
 // In DynamicSurfaceSampler.cs
 
 // *** MODIFIED ***: Change the method signature to accept the player.
-public IEnumerator StartSampling(string outputSubFolder, float animationDuration, SMPLAnimationPlayer playerToCheck)
-{
-    float durationToUse = (animationDuration > 0) ? animationDuration : this.captureDuration;
-    float interval = 1f / captureFPS;
-    
-    // We still calculate totalFrames, but now it acts as a safety break to prevent infinite loops.
-    int maxFrames = Mathf.CeilToInt(durationToUse * captureFPS * 1.5f); // A generous limit
-    
-    Debug.Log($"Starting sampling. Will stop when animation finishes or at {maxFrames} frames. Saving to '{outputSubFolder}'.");
+// In DynamicSurfaceSampler.cs
 
-    // --- Step 1: Perform the one-time scan of the static environment ---
+// In DynamicSurfaceSampler.cs
+
+public IEnumerator StartSampling(string outputSubFolder, float animationDuration, SMPLAnimationPlayer playerToCheck, float animationFPS)
+{
+    // The sampler's own 'captureFPS' determines how many points we generate.
+    float durationToUse = (animationDuration > 0) ? animationDuration : this.captureDuration;
+    int totalFramesToCapture = Mathf.FloorToInt(durationToUse * this.captureFPS);
+    if (totalFramesToCapture <= 0) totalFramesToCapture = 1;
+
+    Debug.Log($"Starting synchronized capture. Source FPS: {animationFPS}, Capture FPS: {this.captureFPS}. Capturing {totalFramesToCapture} frames.");
+
+    // Static scene scan remains the same.
     Debug.Log("Performing initial scan of the static environment...");
     staticSampledPoints = new List<SampledPoint>();
     Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
     SampleStaticScene(staticSampledPoints, roomBounds);
     Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
 
-    // *** MODIFIED ***: Replaced the 'for' loop with a 'while' loop.
-    int frame = 0;
-    while (frame < maxFrames && playerToCheck.IsPlaying)
+    // This loop now iterates through the frames of our NEW sequence.
+    for (int captureFrame = 0; captureFrame < totalFramesToCapture; captureFrame++)
     {
+        // *** CORE LOGIC CHANGE ***
+        // 1. Calculate the timestamp of the current capture frame.
+        float timestamp = (float)captureFrame / this.captureFPS;
+
+        // 2. Find which frame in the ORIGINAL animation corresponds to that timestamp.
+        int sourceAnimationFrame = Mathf.FloorToInt(timestamp * animationFPS);
+
+        // 3. Manually set the character's pose to that specific source frame.
+        playerToCheck.SetPoseForFrame(sourceAnimationFrame);
+
+        // 4. CRITICAL: Wait for the mesh to update.
+        yield return new WaitForEndOfFrame();
+
+        // 5. Sample and save the point cloud for this synchronized frame.
         List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
         SampleDynamicObjects(dynamicPointsThisFrame, roomBounds);
-
+        
         List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
         combinedFramePoints.AddRange(dynamicPointsThisFrame);
-        
-        SaveFrameToPCD(combinedFramePoints, frame, outputSubFolder);
-
-        // Increment frame counter
-        frame++;
-
-        yield return new WaitForSeconds(interval);
-    }
-
-    if (frame >= maxFrames)
-    {
-        Debug.LogWarning("Sampling stopped because it reached the maximum frame limit. The animation's 'IsPlaying' flag may not have been set to false correctly.");
-    }
-    else
-    {
-        Debug.Log($"Sampling stopped because animation finished. Captured {frame} frames.");
+        SaveFrameToPCD(combinedFramePoints, captureFrame, outputSubFolder);
     }
     
-    Debug.Log("Sampling for current animation finished.");
+    Debug.Log($"Synchronized capture finished. Captured {totalFramesToCapture} frames.");
 }
-
     // *** NEW ***: This method samples everything EXCEPT the dynamic (human) object.
     void SampleStaticScene(List<SampledPoint> pointsList, Bounds roomBounds)
     {
