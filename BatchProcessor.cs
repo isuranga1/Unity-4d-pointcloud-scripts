@@ -48,6 +48,19 @@ public class BatchProcessor : MonoBehaviour
     [Tooltip("The layer mask representing the floor, used for the 'Snap to Floor' feature.")]
     public LayerMask floorLayer;
 
+    [Header("Dynamic Placement Settings")]
+    [Tooltip("Reference to the CharacterController on the SMPL model for collision checks.")]
+    public CharacterController characterController;
+    [Tooltip("The layers that the character should consider as obstacles.")]
+    public LayerMask placementCollisionLayerMask;
+    [Tooltip("The size of the area (in meters) to search for a valid placement, centered on the character's current position.")]
+    public Vector2 placementSearchAreaSize = new Vector2(5f, 5f);
+    [Tooltip("The distance between each test point in the search grid (in meters). Smaller values are more accurate but slower.")]
+    public float placementSearchGridDensity = 0.25f;
+    [Tooltip("The angular step (in degrees) to test rotations during placement search. Set to 0 or less to only test the current rotation from the slider.")]
+    public float placementRotationSearchStep = 10f;
+
+
     // --- Private State ---
     private enum EditorState { Tuning, BatchProcessing }
     private EditorState currentState = EditorState.Tuning;
@@ -62,6 +75,7 @@ public class BatchProcessor : MonoBehaviour
     private bool isDirty = false;
     private int activeCameraIndex = 0;
     private string currentAnimationDescription = "No description available.";
+    private bool isSearchingForPlacement = false;
 
     // --- Helper properties to generate the new folder structure consistently ---
     /// <summary>Formats the environment name with its number, e.g., "Bathroom_001".</summary>
@@ -387,7 +401,7 @@ public class BatchProcessor : MonoBehaviour
             padding = new RectOffset(5, 5, 5, 5)
         };
 
-        GUI.Box(new Rect(10, 10, 330, 440), "Animation Tuner & Batcher");
+        GUI.Box(new Rect(10, 10, 330, 480), "Animation Tuner & Batcher");
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
         
         float yPos = 40;
@@ -442,9 +456,26 @@ public class BatchProcessor : MonoBehaviour
         GUI.color = Color.white;
         yPos += 30;
         
-        if (GUI.Button(new Rect(20, yPos, 300, 20), "Snap to Floor"))
+        if (GUI.Button(new Rect(20, yPos, 145, 20), "Snap to Floor"))
         {
             SnapToFloor();
+        }
+
+        if (isSearchingForPlacement)
+        {
+            GUI.backgroundColor = new Color(1f, 0.8f, 0.8f); // Reddish color for stop button
+            if (GUI.Button(new Rect(175, yPos, 145, 20), "Stop Search"))
+            {
+                isSearchingForPlacement = false; // The coroutine will see this and stop
+            }
+            GUI.backgroundColor = Color.white;
+        }
+        else
+        {
+            if (GUI.Button(new Rect(175, yPos, 145, 20), "Find Valid Placement"))
+            {
+                StartCoroutine(FindAndApplyValidPlacement());
+            }
         }
         yPos += 30;
 
@@ -469,6 +500,164 @@ public class BatchProcessor : MonoBehaviour
         GUI.backgroundColor = Color.white;
     }
 
+
+    // ===================================================================
+    // =========== DYNAMIC PLACEMENT =====================================
+    // ===================================================================
+
+    private IEnumerator FindAndApplyValidPlacement()
+    {
+        if (characterController == null)
+        {
+            Debug.LogError("Character Controller is not assigned in the Inspector. Cannot find placement.");
+            yield break;
+        }
+        if (currentAnimationIndex < 0)
+        {
+            Debug.LogError("No animation loaded. Cannot find placement.");
+            yield break;
+        }
+
+        isSearchingForPlacement = true;
+        Debug.Log("Starting search for a valid placement...");
+
+        // Get the room bounds at the start of the search.
+        Bounds roomBounds = surfaceSampler.GetRoomBounds();
+        if(roomBounds.size == Vector3.zero)
+        {
+            Debug.LogError("Could not determine room bounds. Aborting placement search. Ensure 'roomObjectKeyword' in DynamicSurfaceSampler is set correctly and room objects are active.");
+            isSearchingForPlacement = false;
+            yield break;
+        }
+        Debug.Log($"Search constrained to room bounds: Center={roomBounds.center}, Size={roomBounds.size}");
+
+        try
+        {
+            string filePath = animationFiles[currentAnimationIndex];
+            string animFileName = Path.GetFileNameWithoutExtension(filePath);
+            Vector3 searchCenter = smplPlayer.transform.position;
+            Vector3 startOffset = smplPlayer.GetModelBaseInitialPosition();
+
+            float halfX = placementSearchAreaSize.x / 2f;
+            float halfZ = placementSearchAreaSize.y / 2f;
+
+            for (float x = -halfX; x <= halfX; x += placementSearchGridDensity)
+            {
+                for (float z = -halfZ; z <= halfZ; z += placementSearchGridDensity)
+                {
+                    if (!isSearchingForPlacement) { yield break; }
+
+                    Vector3 testWorldPos = searchCenter + new Vector3(x, 0, z);
+                    
+                    // Only proceed if the test point is within the room.
+                    if (roomBounds.Contains(testWorldPos))
+                    {
+                        RaycastHit hit;
+                        if (Physics.Raycast(testWorldPos + Vector3.up * 0.1f, Vector3.down, out hit, 2f, floorLayer))
+                        {
+                            Vector3 groundedPos = hit.point;
+                            
+                            if (placementRotationSearchStep > 0)
+                            {
+                                for (float rotY = 0; rotY < 360; rotY += placementRotationSearchStep)
+                                {
+                                    if (!isSearchingForPlacement) { yield break; }
+
+                                    if (!CheckAnimationPathForCollisions(filePath, groundedPos, rotY))
+                                    {
+                                        Debug.Log($"Found valid placement at {groundedPos} with rotation {rotY}. Applying new offset and rotation.");
+                                        
+                                        liveOffset = groundedPos - startOffset;
+                                        liveRotationY = rotY;
+
+                                        tunedOffsets[animFileName] = liveOffset;
+                                        tunedRotations[animFileName] = liveRotationY;
+
+                                        smplPlayer.UpdateLiveOffset(liveOffset);
+                                        smplPlayer.UpdateLiveRotation(liveRotationY);
+                                        isDirty = true;
+                                        yield break; 
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                if (!CheckAnimationPathForCollisions(filePath, groundedPos, liveRotationY))
+                                {
+                                    Debug.Log($"Found valid placement at {groundedPos} (using current rotation). Applying new offset.");
+                                    
+                                    liveOffset = groundedPos - startOffset;
+                                    tunedOffsets[animFileName] = liveOffset;
+                                    smplPlayer.UpdateLiveOffset(liveOffset);
+                                    isDirty = true;
+                                    yield break;
+                                }
+                            }
+                        }
+                    }
+                    yield return null; 
+                }
+            }
+
+            Debug.LogWarning("Could not find a valid collision-free placement in the search area for any rotation.");
+        }
+        finally
+        {
+            if (!isSearchingForPlacement)
+            {
+                Debug.Log("Placement search was cancelled by user.");
+            }
+            isSearchingForPlacement = false;
+        }
+    }
+    
+    private bool CheckAnimationPathForCollisions(string jsonFilePath, Vector3 startWorldPos, float rotationY)
+    {
+        try
+        {
+            string jsonText = File.ReadAllText(jsonFilePath);
+            var json = JSON.Parse(jsonText);
+            var transNode = json["trans"];
+            int frameCount = transNode.Count;
+
+            if (frameCount == 0) return false;
+
+            Vector3 firstFrameMayaPos = new Vector3(transNode[0][0], transNode[0][1], transNode[0][2]);
+            Vector3 animationStartOffset = smplPlayer.ConvertMayaToUnity(firstFrameMayaPos);
+            Quaternion characterRotation = Quaternion.Euler(0, rotationY, 0);
+
+            for (int frame = 0; frame < frameCount; frame++)
+            {
+                float jsonX = transNode[frame][0];
+                float jsonZ = transNode[frame][1];
+                float jsonY = transNode[frame][2];
+                jsonY -= smplPlayer.yOffset;
+                var mayaPos = new Vector3(jsonX, jsonZ, jsonY);
+                Vector3 currentFrameUnityPos = smplPlayer.ConvertMayaToUnity(mayaPos);
+
+                Vector3 displacement = currentFrameUnityPos - animationStartOffset;
+                Vector3 rotatedDisplacement = characterRotation * displacement;
+                Vector3 predictedWorldPos = startWorldPos + rotatedDisplacement;
+
+                Vector3 capsuleCenter = predictedWorldPos + characterController.center;
+                Vector3 p1 = capsuleCenter + Vector3.up * (characterController.height / 2 - characterController.radius);
+                Vector3 p2 = capsuleCenter - Vector3.up * (characterController.height / 2 - characterController.radius);
+
+                if (Physics.CheckCapsule(p1, p2, characterController.radius, placementCollisionLayerMask, QueryTriggerInteraction.Ignore))
+                {
+                    return true; // Collision detected
+                }
+            }
+        }
+        catch(Exception e)
+        {
+            Debug.LogError($"Error checking animation path: {e.Message}");
+            return true; // Assume collision on error to be safe
+        }
+
+        return false; // No collisions found
+    }
+
     // ===================================================================
     // =========== STAGE 2: AUTOMATED BATCH RUNNER =======================
     // ===================================================================
@@ -480,7 +669,6 @@ public class BatchProcessor : MonoBehaviour
         if (smplPlayer != null)
         {
             smplPlayer.loop = false;
-            // Note: IsInBatchMode will now be controlled inside the loop for each pass.
         }
 
         JSONObject summaryReport = CreateReportHeader();
@@ -542,7 +730,6 @@ public class BatchProcessor : MonoBehaviour
             }
             catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
 
-            // Reporting logic remains the same
             JSONObject animSummaryReport = new JSONObject();
             animSummaryReport["animationName"] = animFileName;
             animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
@@ -576,35 +763,22 @@ public class BatchProcessor : MonoBehaviour
             
             SaveIndividualReport(individualReport, finalOutputDirectory);
 
-            // --- PASS 1: Point Cloud Sampling ---
             Debug.Log($"Starting Pass 1: Point Cloud Sampling for '{animFileName}'.");
-            smplPlayer.IsInBatchMode = true; // Set mode for manual frame control by the sampler
+            smplPlayer.IsInBatchMode = true; 
             smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
             yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath, calculatedDuration, smplPlayer, fps));
             Debug.Log("Pass 1 (Point Cloud Sampling) complete.");
 
-            // --- PASS 2: Video Recording ---
             if (calculatedDuration > 0)
             {
                 Debug.Log($"Starting Pass 2: Video Recording for '{animFileName}'.");
-                
-                // **THE FIX**: Re-enable the Update() loop in the player for automatic playback.
                 smplPlayer.IsInBatchMode = false; 
-                
-                // Reload and play the animation to ensure it starts from the beginning for the recording.
                 smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
-                
-                // Give the system a moment to start the animation playback cleanly.
                 yield return new WaitForSeconds(0.1f);
 
                 string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
-                
-                // Record using the animation's actual 'fps' for correct speed.
                 sceneRecorder.BeginRecording(videoFilePath, fps);
-
-                // Wait for the full duration of the animation to ensure the entire clip is recorded.
                 yield return new WaitForSeconds(calculatedDuration);
-
                 sceneRecorder.EndRecording();
                 Debug.Log("Pass 2 (Video Recording) complete.");
             }
@@ -624,7 +798,7 @@ public class BatchProcessor : MonoBehaviour
         }
         summaryReport["excludedAnimations"] = excludedAnimationsReport;
         
-        SaveExcludedAnimationsConfig(); // Save the dedicated exclusion list file.
+        SaveExcludedAnimationsConfig(); 
         SaveSummaryReport(summaryReport);
         
         if (smplPlayer != null)
@@ -850,4 +1024,3 @@ public class BatchProcessor : MonoBehaviour
         }
     }
 }
-

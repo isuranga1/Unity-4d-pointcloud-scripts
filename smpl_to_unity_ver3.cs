@@ -22,10 +22,7 @@ public class SMPLAnimationPlayer : MonoBehaviour
     private AnimationData animData;
     private float currentTime = 0f;
 
-    // *** MODIFIED ***: Converted the private 'isPlaying' variable into a public property
-    // Other scripts can now read this value to know if the animation is running.
     public bool IsPlaying { get; private set; } = false;
-    // *** NEW ***: A flag to disable the Update-driven playback during batch processing.
     public bool IsInBatchMode { get; set; } = false;
     private Transform[] bones;
 
@@ -72,7 +69,6 @@ public class SMPLAnimationPlayer : MonoBehaviour
 
     void Update()
     {
-        // *** MODIFIED ***: Only run the automatic playback if NOT in batch mode.
         if (!IsInBatchMode && IsPlaying && animData != null)
         {
             currentTime += Time.deltaTime * playbackSpeed;
@@ -149,40 +145,14 @@ public class SMPLAnimationPlayer : MonoBehaviour
         catch (Exception e) { Debug.LogError($"Failed to load animation: {e.Message}"); }
     }
 
-    // void ApplyFrame()
-    // {
-    //     if (animData == null) return;
+    // *** NEW: Public method to get the initial position ***
+    public Vector3 GetModelBaseInitialPosition()
+    {
+        return modelBaseInitialPosition;
+    }
 
-    //     int frame = Mathf.FloorToInt(currentTime * animData.fps);
-    //     frame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
-
-    //     Vector3 currentAnimTranslation = animData.translations[frame];
-    //     Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
-
-    //     Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
-    //     Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
-
-    //     Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
-
-    //     Vector3 newPosition = finalStartPosition + rotatedDisplacement;
-    //     transform.localPosition = newPosition;
-
-    //     for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
-    //     {
-    //         string boneName = bones[boneIndex].name;
-    //         if (BoneMapping.TryGetValue(boneName, out int jointIndex))
-    //         {
-    //             bones[boneIndex].localEulerAngles = Vector3.zero;
-    //             if (boneName == "Pelvis")
-    //             {
-    //                 bones[boneIndex].Rotate(-90, 0, 0, Space.Self);
-    //             }
-    //             bones[boneIndex].localRotation *= animData.poses[frame, jointIndex];
-    //         }
-    //     }
-    // }
-
-    Vector3 ConvertMayaToUnity(Vector3 mayaPos)
+    // *** MODIFIED: Changed protection level to public ***
+    public Vector3 ConvertMayaToUnity(Vector3 mayaPos)
     {
         return new Vector3(-mayaPos.x, mayaPos.z, -mayaPos.y);
     }
@@ -196,28 +166,22 @@ public class SMPLAnimationPlayer : MonoBehaviour
     {
         if (animData == null) return;
         currentTime = 0f;
-        // *** MODIFIED ***: Using the new public property
         IsPlaying = true;
     }
 
     public void Stop()
     {
-        // *** MODIFIED ***: Using the new public property
         IsPlaying = false;
         currentTime = 0f;
         if (animData != null) ApplyFrame();
     }
     
-    // *** NEW ***: A public method to allow external scripts to set the pose for a specific frame.
     public void SetPoseForFrame(int frame)
     {
         if (animData == null) return;
 
-        // Clamp the frame to be within the valid range.
         int clampedFrame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
         
-        // The following logic is moved from your old ApplyFrame() method,
-        // but now it uses the specific 'clampedFrame' we provide.
         Vector3 currentAnimTranslation = animData.translations[clampedFrame];
         Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
         
@@ -243,13 +207,10 @@ public class SMPLAnimationPlayer : MonoBehaviour
         }
     }
 
-    // Keep your original ApplyFrame() private for the interactive mode to use.
     void ApplyFrame()
     {
         if (animData == null) return;
         int frame = Mathf.FloorToInt(currentTime * animData.fps);
-        SetPoseForFrame(frame); // It can now just call our new, robust method.
+        SetPoseForFrame(frame);
     }
-
 }
-

@@ -8,7 +8,6 @@ public class DynamicSurfaceSampler : MonoBehaviour
 {
     [Header("Sampling Settings")]
     public float defaultPointsPerUnitArea = 100f;
-    // *** NEW ***: Added a keyword to identify the dynamic object.
     public string humanObjectKeyword = "human"; 
     public ObjectDensityOverride[] densityOverrides;
     public string roomObjectKeyword = "room";
@@ -37,129 +36,113 @@ public class DynamicSurfaceSampler : MonoBehaviour
     [Header("Randomization")]
     public int fixedRandomSeed = 1337;
     
-    // *** NEW ***: A list to hold the static scene points, sampled only once.
     private List<SampledPoint> staticSampledPoints;
+    private Bounds roomBounds; // To cache the calculated bounds.
 
     void Start()
     {
         // The BatchProcessor now controls when sampling starts.
     }
-
-    // *** MODIFIED ***: The main coroutine is updated for the new efficient logic.
-// In DynamicSurfaceSampler.cs
-
-// *** MODIFIED ***: The method now accepts an optional animationDuration.
-// In DynamicSurfaceSampler.cs
-
-// *** MODIFIED ***: Change the method signature to accept the player.
-// In DynamicSurfaceSampler.cs
-
-// In DynamicSurfaceSampler.cs
-
-public IEnumerator StartSampling(string outputSubFolder, float animationDuration, SMPLAnimationPlayer playerToCheck, float animationFPS)
-{
-    // The sampler's own 'captureFPS' determines how many points we generate.
-    float durationToUse = (animationDuration > 0) ? animationDuration : this.captureDuration;
-    int totalFramesToCapture = Mathf.FloorToInt(durationToUse * this.captureFPS);
-    if (totalFramesToCapture <= 0) totalFramesToCapture = 1;
-
-    Debug.Log($"Starting synchronized capture. Source FPS: {animationFPS}, Capture FPS: {this.captureFPS}. Capturing {totalFramesToCapture} frames.");
-
-    // Static scene scan remains the same.
-    Debug.Log("Performing initial scan of the static environment...");
-    staticSampledPoints = new List<SampledPoint>();
-    Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
-    SampleStaticScene(staticSampledPoints, roomBounds);
-    Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
-
-    // This loop now iterates through the frames of our NEW sequence.
-    for (int captureFrame = 0; captureFrame < totalFramesToCapture; captureFrame++)
-    {
-        // *** CORE LOGIC CHANGE ***
-        // 1. Calculate the timestamp of the current capture frame.
-        float timestamp = (float)captureFrame / this.captureFPS;
-
-        // 2. Find which frame in the ORIGINAL animation corresponds to that timestamp.
-        int sourceAnimationFrame = Mathf.FloorToInt(timestamp * animationFPS);
-
-        // 3. Manually set the character's pose to that specific source frame.
-        playerToCheck.SetPoseForFrame(sourceAnimationFrame);
-
-        // 4. CRITICAL: Wait for the mesh to update.
-        yield return new WaitForEndOfFrame();
-
-        // 5. Sample and save the point cloud for this synchronized frame.
-        List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
-        SampleDynamicObjects(dynamicPointsThisFrame, roomBounds);
-        
-        List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
-        combinedFramePoints.AddRange(dynamicPointsThisFrame);
-        SaveFrameToPCD(combinedFramePoints, captureFrame, outputSubFolder);
-    }
     
-    Debug.Log($"Synchronized capture finished. Captured {totalFramesToCapture} frames.");
-}
-    // *** NEW ***: This method samples everything EXCEPT the dynamic (human) object.
-    void SampleStaticScene(List<SampledPoint> pointsList, Bounds roomBounds)
+    /// <summary>
+    /// Calculates and returns the bounding box of the room. Caches the result for efficiency.
+    /// </summary>
+    /// <returns>The calculated Bounds of the room.</returns>
+    public Bounds GetRoomBounds()
     {
-        // Sample static meshes
+        if (roomBounds.size == Vector3.zero)
+        {
+            roomBounds = CalculateRoomBounds(roomObjectKeyword);
+        }
+        return roomBounds;
+    }
+
+    void OnDrawGizmosSelected()
+    {
+        // This will draw the room bounds in the Scene view when this object is selected.
+        // It's helpful for visualizing the placement search area.
+        Gizmos.color = new Color(0, 1, 0, 0.5f); // Green and semi-transparent
+        Bounds boundsToDraw = GetRoomBounds();
+        if (boundsToDraw.size != Vector3.zero)
+        {
+            Gizmos.DrawWireCube(boundsToDraw.center, boundsToDraw.size);
+        }
+    }
+
+    public IEnumerator StartSampling(string outputSubFolder, float animationDuration, SMPLAnimationPlayer playerToCheck, float animationFPS)
+    {
+        float durationToUse = (animationDuration > 0) ? animationDuration : this.captureDuration;
+        int totalFramesToCapture = Mathf.FloorToInt(durationToUse * this.captureFPS);
+        if (totalFramesToCapture <= 0) totalFramesToCapture = 1;
+
+        Debug.Log($"Starting synchronized capture. Source FPS: {animationFPS}, Capture FPS: {this.captureFPS}. Capturing {totalFramesToCapture} frames.");
+
+        Debug.Log("Performing initial scan of the static environment...");
+        staticSampledPoints = new List<SampledPoint>();
+        Bounds currentRoomBounds = GetRoomBounds(); // Use the getter to ensure it's calculated
+        SampleStaticScene(staticSampledPoints, currentRoomBounds);
+        Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+
+        for (int captureFrame = 0; captureFrame < totalFramesToCapture; captureFrame++)
+        {
+            float timestamp = (float)captureFrame / this.captureFPS;
+            int sourceAnimationFrame = Mathf.FloorToInt(timestamp * animationFPS);
+            playerToCheck.SetPoseForFrame(sourceAnimationFrame);
+            yield return new WaitForEndOfFrame();
+
+            List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
+            SampleDynamicObjects(dynamicPointsThisFrame, currentRoomBounds);
+            
+            List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
+            combinedFramePoints.AddRange(dynamicPointsThisFrame);
+            SaveFrameToPCD(combinedFramePoints, captureFrame, outputSubFolder);
+        }
+        
+        Debug.Log($"Synchronized capture finished. Captured {totalFramesToCapture} frames.");
+    }
+    void SampleStaticScene(List<SampledPoint> pointsList, Bounds bounds)
+    {
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
         {
             if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
-            
-            // If the object's name contains the human keyword, skip it.
             if (!string.IsNullOrEmpty(humanObjectKeyword) && mf.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower())) continue;
-            
-            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, pointsList);
+            SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, bounds, pointsList);
         }
 
-        // It's unlikely for static objects to be SkinnedMeshRenderers, but we check just in case.
         foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
             if (!smr.gameObject.activeInHierarchy) continue;
-
-            // If the object's name contains the human keyword, skip it.
             if (!string.IsNullOrEmpty(humanObjectKeyword) && smr.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower())) continue;
-
             Mesh bakedMesh = new Mesh();
             smr.BakeMesh(bakedMesh);
-            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, pointsList);
+            SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, bounds, pointsList);
         }
     }
 
-    // *** NEW ***: This method samples ONLY the dynamic (human) object.
-// *** NEW ***: This method samples ONLY the dynamic (human) object.
-    void SampleDynamicObjects(List<SampledPoint> pointsList, Bounds roomBounds)
+    void SampleDynamicObjects(List<SampledPoint> pointsList, Bounds bounds)
     {
-        // Dynamic objects are typically SkinnedMeshRenderers
         foreach (SkinnedMeshRenderer smr in FindObjectsOfType<SkinnedMeshRenderer>())
         {
             if (!smr.gameObject.activeInHierarchy) continue;
 
-            // Only sample the object if its name contains the human keyword.
             if (!string.IsNullOrEmpty(humanObjectKeyword) && smr.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower()))
             {
                 Mesh bakedMesh = new Mesh();
-                smr.BakeMesh(bakedMesh); // Bake the mesh at its current animation pose
-                SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, roomBounds, pointsList);
+                smr.BakeMesh(bakedMesh);
+                SampleMeshPointsUniform(bakedMesh, smr.transform, smr.gameObject.name, bounds, pointsList);
             }
         }
         
-        // Also check MeshFilters in case the dynamic object is not skinned.
         foreach (MeshFilter mf in FindObjectsOfType<MeshFilter>())
         {
             if (!mf.gameObject.activeInHierarchy || mf.sharedMesh == null) continue;
             
             if (!string.IsNullOrEmpty(humanObjectKeyword) && mf.gameObject.name.ToLower().Contains(humanObjectKeyword.ToLower()))
             {
-                // *** THIS IS THE CORRECTED LINE ***
-                SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, roomBounds, pointsList);
+                SampleMeshPointsUniform(mf.sharedMesh, mf.transform, mf.gameObject.name, bounds, pointsList);
             }
         }
     }
-    // NOTE: The rest of your code (`SampleMeshPointsUniform`, `GetDensityForObject`, `CalculateRoomBounds`, `SaveFrameToPCD`)
-    // can remain exactly the same. They are generic enough to work with this new structure. I'm including them here for completeness.
-
     void SampleMeshPointsUniform(Mesh mesh, Transform transform, string objectName, Bounds roomBounds, List<SampledPoint> sampledPoints)
     {
         if (mesh.vertexCount == 0) return;
@@ -178,7 +161,6 @@ public IEnumerator StartSampling(string outputSubFolder, float animationDuration
             texture = renderer.sharedMaterial.mainTexture as Texture2D;
             if (texture != null && !texture.isReadable)
             {
-                Debug.LogWarning($"Texture on '{objectName}' is not marked as Read/Write. Colors may be incorrect. Please enable it in texture import settings.", texture);
                 texture = null;
             }
         }
@@ -256,9 +238,7 @@ public IEnumerator StartSampling(string outputSubFolder, float animationDuration
                     Vector3 n_local_0 = normals[vertIndex0];
                     Vector3 n_local_1 = normals[vertIndex1];
                     Vector3 n_local_2 = normals[vertIndex2];
-                    
                     Vector3 interpolatedNormalLocal = (n_local_0 + u * (n_local_1 - n_local_0) + v * (n_local_2 - n_local_0)).normalized;
-                    
                     pointNormal = transform.TransformDirection(interpolatedNormalLocal);
                 }
 
