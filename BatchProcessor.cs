@@ -68,8 +68,8 @@ public class BatchProcessor : MonoBehaviour
     private string FormattedEnvironmentName => $"{environmentFolderName}_{environmentFolderNumber}";
     /// <summary>Gets the base output path for the current scene, e.g., "Scans/Bathroom/Bathroom_001/scene1".</summary>
     private string BaseOutputPathForScene => Path.Combine(surfaceSampler.baseOutputDirectory, environmentFolderName, FormattedEnvironmentName, sceneFolderName);
-    /// <summary>Gets the directory path for summary reports, e.g., "reports/Bathroom/Bathroom_001/scene1".</summary>
-    private string ReportDirectoryPath => Path.Combine("reports", environmentFolderName, FormattedEnvironmentName, sceneFolderName);
+    /// <summary>Gets the directory path for summary reports, e.g., "Scans/Bathroom/Bathroom_001/scene1/reports".</summary>
+    private string ReportDirectoryPath => Path.Combine(BaseOutputPathForScene, "reports");
 
 
     void Start()
@@ -623,6 +623,8 @@ public class BatchProcessor : MonoBehaviour
             if (!includedAnimations[animFileName]) excludedAnimationsReport.Add(animFileName);
         }
         summaryReport["excludedAnimations"] = excludedAnimationsReport;
+        
+        SaveExcludedAnimationsConfig(); // Save the dedicated exclusion list file.
         SaveSummaryReport(summaryReport);
         
         if (smplPlayer != null)
@@ -643,6 +645,8 @@ public class BatchProcessor : MonoBehaviour
     #endif
         }
     }
+
+
     // ===================================================================
     // =========== REPORTING =============================================
     // ===================================================================
@@ -846,3 +850,4 @@ public class BatchProcessor : MonoBehaviour
         }
     }
 }
+
