@@ -21,13 +21,16 @@ public class SMPLAnimationPlayer : MonoBehaviour
     // Animation data
     private AnimationData animData;
     private float currentTime = 0f;
-    private bool isPlaying = false;
+    
+    // *** MODIFIED ***: Converted the private 'isPlaying' variable into a public property
+    // Other scripts can now read this value to know if the animation is running.
+    public bool IsPlaying { get; private set; } = false;
+
     private Transform[] bones;
     
-    // *** MODIFIED ***: Renamed variables for clarity to indicate they handle full 3D position and rotation.
     private Vector3 modelBaseInitialPosition;
     private Vector3 modelBaseInitialRotation;
-    private Vector3 currentPositionalOffset; // This now clearly includes X, Y, and Z offsets.
+    private Vector3 currentPositionalOffset;
     private float currentAdditionalRotationY;
     private Vector3 animationStartOffset;
 
@@ -68,7 +71,8 @@ public class SMPLAnimationPlayer : MonoBehaviour
 
     void Update()
     {
-        if (isPlaying && animData != null)
+        // *** MODIFIED ***: Using the new public property
+        if (IsPlaying && animData != null)
         {
             currentTime += Time.deltaTime * playbackSpeed;
             float duration = animData.frameCount / (float)animData.fps;
@@ -81,7 +85,6 @@ public class SMPLAnimationPlayer : MonoBehaviour
         }
     }
 
-    // *** MODIFIED ***: Renamed parameter for clarity.
     public void LoadAndPlayAnimation(string jsonFilePath, Vector3 positionalOffset, float additionalRotationY)
     {
         this.currentPositionalOffset = positionalOffset;
@@ -91,7 +94,6 @@ public class SMPLAnimationPlayer : MonoBehaviour
         Play();
     }
 
-    // *** MODIFIED ***: Renamed parameter for clarity.
     public void UpdateLiveOffset(Vector3 newPositionalOffset)
     {
         this.currentPositionalOffset = newPositionalOffset;
@@ -159,7 +161,6 @@ public class SMPLAnimationPlayer : MonoBehaviour
         Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
         Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
 
-        // *** MODIFIED ***: The final start position now correctly includes the X, Y, and Z offsets from the controller.
         Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
 
         Vector3 newPosition = finalStartPosition + rotatedDisplacement;
@@ -194,12 +195,14 @@ public class SMPLAnimationPlayer : MonoBehaviour
     {
         if (animData == null) return;
         currentTime = 0f;
-        isPlaying = true;
+        // *** MODIFIED ***: Using the new public property
+        IsPlaying = true;
     }
 
     public void Stop()
     {
-        isPlaying = false;
+        // *** MODIFIED ***: Using the new public property
+        IsPlaying = false;
         currentTime = 0f;
         if (animData != null) ApplyFrame();
     }

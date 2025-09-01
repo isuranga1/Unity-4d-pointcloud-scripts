@@ -46,39 +46,58 @@ public class DynamicSurfaceSampler : MonoBehaviour
     }
 
     // *** MODIFIED ***: The main coroutine is updated for the new efficient logic.
-    public IEnumerator StartSampling(string outputSubFolder)
+// In DynamicSurfaceSampler.cs
+
+// *** MODIFIED ***: The method now accepts an optional animationDuration.
+// In DynamicSurfaceSampler.cs
+
+// *** MODIFIED ***: Change the method signature to accept the player.
+public IEnumerator StartSampling(string outputSubFolder, float animationDuration, SMPLAnimationPlayer playerToCheck)
+{
+    float durationToUse = (animationDuration > 0) ? animationDuration : this.captureDuration;
+    float interval = 1f / captureFPS;
+    
+    // We still calculate totalFrames, but now it acts as a safety break to prevent infinite loops.
+    int maxFrames = Mathf.CeilToInt(durationToUse * captureFPS * 1.5f); // A generous limit
+    
+    Debug.Log($"Starting sampling. Will stop when animation finishes or at {maxFrames} frames. Saving to '{outputSubFolder}'.");
+
+    // --- Step 1: Perform the one-time scan of the static environment ---
+    Debug.Log("Performing initial scan of the static environment...");
+    staticSampledPoints = new List<SampledPoint>();
+    Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword);
+    SampleStaticScene(staticSampledPoints, roomBounds);
+    Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+
+    // *** MODIFIED ***: Replaced the 'for' loop with a 'while' loop.
+    int frame = 0;
+    while (frame < maxFrames && playerToCheck.IsPlaying)
     {
-        float interval = 1f / captureFPS;
-        int totalFrames = Mathf.CeilToInt(captureDuration * captureFPS);
+        List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
+        SampleDynamicObjects(dynamicPointsThisFrame, roomBounds);
 
-        Debug.Log($"Starting sampling for {captureDuration}s at {captureFPS} FPS. Saving to '{outputSubFolder}'.");
+        List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
+        combinedFramePoints.AddRange(dynamicPointsThisFrame);
+        
+        SaveFrameToPCD(combinedFramePoints, frame, outputSubFolder);
 
-        // --- Step 1: Perform the one-time scan of the static environment ---
-        Debug.Log("Performing initial scan of the static environment...");
-        staticSampledPoints = new List<SampledPoint>();
-        Bounds roomBounds = CalculateRoomBounds(roomObjectKeyword); // Calculate bounds once
-        SampleStaticScene(staticSampledPoints, roomBounds);
-        Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
+        // Increment frame counter
+        frame++;
 
-        // --- Step 2: Loop through frames, sampling only the dynamic object and combining ---
-        for (int frame = 0; frame < totalFrames; frame++)
-        {
-            // Create a list for the dynamic points for this specific frame.
-            List<SampledPoint> dynamicPointsThisFrame = new List<SampledPoint>();
-            SampleDynamicObjects(dynamicPointsThisFrame, roomBounds);
-
-            // Combine the persistent static points with the new dynamic points for this frame.
-            List<SampledPoint> combinedFramePoints = new List<SampledPoint>(staticSampledPoints);
-            combinedFramePoints.AddRange(dynamicPointsThisFrame);
-
-            // Save the combined point cloud.
-            SaveFrameToPCD(combinedFramePoints, frame, outputSubFolder);
-
-            yield return new WaitForSeconds(interval);
-        }
-
-        Debug.Log("Sampling for current animation finished.");
+        yield return new WaitForSeconds(interval);
     }
+
+    if (frame >= maxFrames)
+    {
+        Debug.LogWarning("Sampling stopped because it reached the maximum frame limit. The animation's 'IsPlaying' flag may not have been set to false correctly.");
+    }
+    else
+    {
+        Debug.Log($"Sampling stopped because animation finished. Captured {frame} frames.");
+    }
+    
+    Debug.Log("Sampling for current animation finished.");
+}
 
     // *** NEW ***: This method samples everything EXCEPT the dynamic (human) object.
     void SampleStaticScene(List<SampledPoint> pointsList, Bounds roomBounds)
