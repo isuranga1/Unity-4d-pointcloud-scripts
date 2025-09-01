@@ -1,6 +1,5 @@
 using UnityEngine;
 using System.IO;
-// Add the required namespaces for the Unity Recorder API.
 using UnityEditor.Recorder;
 using UnityEditor.Recorder.Input;
 
@@ -15,26 +14,22 @@ public class SceneRecorder : MonoBehaviour
     /// <summary>
     /// Starts recording a video to the specified output file path.
     /// </summary>
-    /// <param name="outputFilePath">The full path and filename for the output video (e.g., "C:/Path/To/Output/recording.mp4").</param>
-    public void BeginRecording(string outputFilePath)
+    /// <param name="outputFilePath">The full path for the output video (e.g., "C:/Path/To/Output/recording.mp4").</param>
+    /// <param name="frameRate">The target frame rate for the video recording.</param>
+    public void BeginRecording(string outputFilePath, float frameRate) // MODIFIED: Added frameRate parameter
     {
-        // Check if a controller already exists and is recording.
         if (recorderController != null && recorderController.IsRecording())
         {
             Debug.LogWarning("Recorder is already running. Stop it before starting a new recording.");
             return;
         }
 
-        // Ensure the output directory exists.
         var directory = Path.GetDirectoryName(outputFilePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        // --- Configure the Recorder ---
-        // *** FIX ***: Create a new settings and controller instance for each recording.
-        // This is a more robust method that avoids state issues and the need for a 'Clear()' method.
         var controllerSettings = ScriptableObject.CreateInstance<RecorderControllerSettings>();
         recorderController = new RecorderController(controllerSettings);
         
@@ -42,27 +37,28 @@ public class SceneRecorder : MonoBehaviour
         settings.name = "My Video Recorder";
         settings.Enabled = true;
 
-        // Set the output format to MP4.
         settings.OutputFormat = MovieRecorderSettings.VideoRecorderOutputFormat.MP4;
         settings.EncodingQuality = MovieRecorderSettings.VideoEncodingQuality.High;
 
-        // Define what to record (the Game View).
+        // *** NEW: Set the recorder's frame rate to match the animation's FPS ***
+        settings.FrameRatePlayback = FrameRatePlayback.Constant;
+        settings.FrameRate = frameRate;
+        // **********************************************************************
+
         settings.ImageInputSettings = new GameViewInputSettings
         {
-            OutputWidth = 1920, // Set your desired resolution
+            OutputWidth = 1920,
             OutputHeight = 1080
         };
         
-        // Define where to save the file. The Recorder adds its own extension.
         settings.OutputFile = Path.ChangeExtension(outputFilePath, null); 
 
-        // Add the configured settings to the controller.
         controllerSettings.AddRecorderSettings(settings);
         
         recorderController.PrepareRecording();
         recorderController.StartRecording();
         
-        Debug.Log($"[SceneRecorder] Started. Saving video to: {outputFilePath}");
+        Debug.Log($"[SceneRecorder] Started. Saving video to: {outputFilePath} at {frameRate} FPS.");
     }
 
     /// <summary>
@@ -78,10 +74,8 @@ public class SceneRecorder : MonoBehaviour
 
     void OnDisable()
     {
-        // Clean up the controller when the component is disabled or the application quits.
         if (recorderController != null)
         {
-            // A final check to ensure we stop recording if the object is disabled mid-session.
             if(recorderController.IsRecording())
             {
                 recorderController.StopRecording();

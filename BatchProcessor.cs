@@ -473,159 +473,176 @@ public class BatchProcessor : MonoBehaviour
     // =========== STAGE 2: AUTOMATED BATCH RUNNER =======================
     // ===================================================================
 
-private IEnumerator RunAutomatedBatch()
-{
-    Debug.Log("====== SWITCHING TO AUTOMATED BATCH MODE ======");
-    
-    if (smplPlayer != null)
+    private IEnumerator RunAutomatedBatch()
     {
-        smplPlayer.loop = false;
-        smplPlayer.IsInBatchMode = true;
-    }
-
-    JSONObject summaryReport = CreateReportHeader();
-    JSONArray processedAnimationsReport = new JSONArray();
-    summaryReport["processedAnimations"] = processedAnimationsReport;
-
-    foreach (string filePath in animationFiles)
-    {
-        string animFileName = Path.GetFileNameWithoutExtension(filePath);
-        if (!includedAnimations.ContainsKey(animFileName) || !includedAnimations[animFileName])
+        Debug.Log("====== SWITCHING TO AUTOMATED BATCH MODE ======");
+        
+        if (smplPlayer != null)
         {
-            Debug.Log($"--- Skipping '{animFileName}' as it is excluded from the batch process. ---");
-            continue;
+            smplPlayer.loop = false;
+            // Note: IsInBatchMode will now be controlled inside the loop for each pass.
         }
 
-        Debug.Log($"--- Starting batch recording for: {animFileName} ---");
+        JSONObject summaryReport = CreateReportHeader();
+        JSONArray processedAnimationsReport = new JSONArray();
+        summaryReport["processedAnimations"] = processedAnimationsReport;
 
-        Vector3 finalOffset = Vector3.zero;
-        float finalRotation = 0f;
-        string description = "No description found.";
-        string offsetFilePath = Path.Combine(BaseOutputPathForScene, animFileName, "animation_offsets.json");
-        JSONNode animJson = null;
-        
-        float calculatedDuration = -1f;
-        
-        // *** MOVED & INITIALIZED ***: 'fps' is now declared here with a default value.
-        float fps = 20f;
-
-        try
+        foreach (string filePath in animationFiles)
         {
-            animJson = JSON.Parse(File.ReadAllText(filePath));
-            if (animJson["description"] != null) description = animJson["description"];
-
-            if (animJson["num_frames"] != null)
+            string animFileName = Path.GetFileNameWithoutExtension(filePath);
+            if (!includedAnimations.ContainsKey(animFileName) || !includedAnimations[animFileName])
             {
-                int numFrames = animJson["num_frames"];
-                
-                // *** MODIFIED ***: 'fps' is now assigned, not declared.
-                if (animJson["fps"] != null)
+                Debug.Log($"--- Skipping '{animFileName}' as it is excluded from the batch process. ---");
+                continue;
+            }
+
+            Debug.Log($"--- Starting batch process for: {animFileName} ---");
+
+            Vector3 finalOffset = Vector3.zero;
+            float finalRotation = 0f;
+            string description = "No description found.";
+            string offsetFilePath = Path.Combine(BaseOutputPathForScene, animFileName, "animation_offsets.json");
+            JSONNode animJson = null;
+            
+            float calculatedDuration = -1f;
+            float fps = 20f; // Default FPS
+
+            try
+            {
+                animJson = JSON.Parse(File.ReadAllText(filePath));
+                if (animJson["description"] != null) description = animJson["description"];
+
+                if (animJson["num_frames"] != null && animJson["fps"] != null)
                 {
+                    int numFrames = animJson["num_frames"];
                     fps = animJson["fps"];
+                    if (fps > 0)
+                    {
+                        calculatedDuration = numFrames / fps;
+                        Debug.Log($"'{animFileName}' duration calculated: {numFrames} frames / {fps} FPS = {calculatedDuration:F2} seconds.");
+                    }
                 }
                 else
                 {
-                    Debug.LogWarning($"'{animFileName}' is missing 'fps' key in its JSON. Defaulting to {fps} FPS for duration calculation.");
+                    Debug.LogWarning($"'{animFileName}' is missing 'num_frames' or 'fps' key. Duration cannot be calculated accurately.");
                 }
-
-                if (fps > 0)
+                
+                if (File.Exists(offsetFilePath))
                 {
-                    calculatedDuration = numFrames / fps;
-                    Debug.Log($"'{animFileName}' duration calculated: {numFrames} frames / {fps} FPS = {calculatedDuration:F2} seconds.");
+                    var offsetJson = JSON.Parse(File.ReadAllText(offsetFilePath));
+                    if (offsetJson[animFileName] != null)
+                    {
+                        finalOffset.x = offsetJson[animFileName]["x"];
+                        finalOffset.y = offsetJson[animFileName]["y"] != null ? (float)offsetJson[animFileName]["y"] : 0f;
+                        finalOffset.z = offsetJson[animFileName]["z"];
+                        finalRotation = offsetJson[animFileName]["y_rotation"];
+                    }
                 }
+                else { Debug.LogWarning($"No tuned offset file found for '{animFileName}'. Using default offset/rotation."); }
+            }
+            catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
+
+            // Reporting logic remains the same
+            JSONObject animSummaryReport = new JSONObject();
+            animSummaryReport["animationName"] = animFileName;
+            animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
+            animSummaryReport["tunedRotationY"] = finalRotation;
+            processedAnimationsReport.Add(animSummaryReport);
+
+            JSONObject individualReport = new JSONObject();
+            individualReport["animationName"] = animFileName;
+            individualReport["description"] = description;
+            individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
+            individualReport["tunedRotationY"] = finalRotation;
+            if (animJson != null && animJson["prompt_segments"] != null)
+            {
+                JSONArray newSegments = new JSONArray();
+                foreach (var segmentNode in animJson["prompt_segments"].AsArray)
+                {
+                    var segment = segmentNode.Value;
+                    JSONObject segObj = new JSONObject();
+                    segObj["prompt"] = segment["prompt"];
+                    segObj["label"] = segment["label"];
+                    segObj["start_frame"] = segment["start_frame"];
+                    segObj["end_frame"] = segment["end_frame"];
+                    segObj["num_frames"] = segment["num_frames"];
+                    newSegments.Add(segObj);
+                }
+                individualReport["prompt_segments"] = newSegments;
+            }
+
+            string samplerSubfolderPath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName, animFileName);
+            string finalOutputDirectory = Path.Combine(BaseOutputPathForScene, animFileName);
+            
+            SaveIndividualReport(individualReport, finalOutputDirectory);
+
+            // --- PASS 1: Point Cloud Sampling ---
+            Debug.Log($"Starting Pass 1: Point Cloud Sampling for '{animFileName}'.");
+            smplPlayer.IsInBatchMode = true; // Set mode for manual frame control by the sampler
+            smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
+            yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath, calculatedDuration, smplPlayer, fps));
+            Debug.Log("Pass 1 (Point Cloud Sampling) complete.");
+
+            // --- PASS 2: Video Recording ---
+            if (calculatedDuration > 0)
+            {
+                Debug.Log($"Starting Pass 2: Video Recording for '{animFileName}'.");
+                
+                // **THE FIX**: Re-enable the Update() loop in the player for automatic playback.
+                smplPlayer.IsInBatchMode = false; 
+                
+                // Reload and play the animation to ensure it starts from the beginning for the recording.
+                smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
+                
+                // Give the system a moment to start the animation playback cleanly.
+                yield return new WaitForSeconds(0.1f);
+
+                string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
+                
+                // Record using the animation's actual 'fps' for correct speed.
+                sceneRecorder.BeginRecording(videoFilePath, fps);
+
+                // Wait for the full duration of the animation to ensure the entire clip is recorded.
+                yield return new WaitForSeconds(calculatedDuration);
+
+                sceneRecorder.EndRecording();
+                Debug.Log("Pass 2 (Video Recording) complete.");
+            }
+            else
+            {
+                Debug.LogWarning($"Skipping video recording for '{animFileName}' because its duration could not be calculated.");
             }
             
-            if (File.Exists(offsetFilePath))
-            {
-                var offsetJson = JSON.Parse(File.ReadAllText(offsetFilePath));
-                if (offsetJson[animFileName] != null)
-                {
-                    finalOffset.x = offsetJson[animFileName]["x"];
-                    finalOffset.y = offsetJson[animFileName]["y"] != null ? (float)offsetJson[animFileName]["y"] : 0f;
-                    finalOffset.z = offsetJson[animFileName]["z"];
-                    finalRotation = offsetJson[animFileName]["y_rotation"];
-                }
-            }
-            else { Debug.LogWarning($"No tuned offset file found for '{animFileName}'. Using default offset/rotation."); }
+            Debug.Log($"--- Finished batch process for: {animFileName} ---");
+            Debug.Log($"--- Saved outputs to {finalOutputDirectory} ---");
         }
-        catch (Exception e) { Debug.LogError($"Error loading data for {animFileName}: {e.Message}"); }
-
-        // ... (The JSON reporting part is unchanged) ...
-        JSONObject animSummaryReport = new JSONObject();
-        animSummaryReport["animationName"] = animFileName;
-        animSummaryReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
-        animSummaryReport["tunedRotationY"] = finalRotation;
-        processedAnimationsReport.Add(animSummaryReport);
-
-        JSONObject individualReport = new JSONObject();
-        individualReport["animationName"] = animFileName;
-        individualReport["description"] = description;
-        individualReport["tunedOffset"] = new JSONObject { ["x"] = finalOffset.x, ["y"] = finalOffset.y, ["z"] = finalOffset.z };
-        individualReport["tunedRotationY"] = finalRotation;
-        if (animJson != null && animJson["prompt_segments"] != null)
+        
+        JSONArray excludedAnimationsReport = new JSONArray();
+        foreach (string animFileName in includedAnimations.Keys)
         {
-            JSONArray newSegments = new JSONArray();
-            foreach (var segmentNode in animJson["prompt_segments"].AsArray)
-            {
-                var segment = segmentNode.Value;
-                JSONObject segObj = new JSONObject();
-                segObj["prompt"] = segment["prompt"];
-                segObj["label"] = segment["label"];
-                segObj["start_frame"] = segment["start_frame"];
-                segObj["end_frame"] = segment["end_frame"];
-                segObj["num_frames"] = segment["num_frames"];
-                newSegments.Add(segObj);
-            }
-            individualReport["prompt_segments"] = newSegments;
+            if (!includedAnimations[animFileName]) excludedAnimationsReport.Add(animFileName);
+        }
+        summaryReport["excludedAnimations"] = excludedAnimationsReport;
+        SaveSummaryReport(summaryReport);
+        
+        if (smplPlayer != null)
+        {
+            smplPlayer.loop = true;
+            smplPlayer.IsInBatchMode = false;
+            smplPlayer.Stop();
         }
 
-        string samplerSubfolderPath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName, animFileName);
-        string finalOutputDirectory = Path.Combine(BaseOutputPathForScene, animFileName);
-        
-        smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
-        
-        SaveIndividualReport(individualReport, finalOutputDirectory);
-
-        string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
-        // In BatchProcessor.cs
-        
-        sceneRecorder.BeginRecording(videoFilePath);
-        
-        // This line can now see the 'fps' variable correctly.
-        yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath, calculatedDuration, smplPlayer, fps));
-        
-        sceneRecorder.EndRecording();
-        Debug.Log($"--- Finished batch recording for: {animFileName} ---");
-        Debug.Log($"--- Saved the pointclouds in {finalOutputDirectory} ---");
+        Debug.Log("====== AUTOMATED BATCH PROCESS COMPLETE! ======");
+        if (quitOnFinish)
+        {
+            Debug.Log("Quitting application.");
+    #if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+    #else
+            Application.Quit();
+    #endif
+        }
     }
-    
-    JSONArray excludedAnimationsReport = new JSONArray();
-    foreach (string animFileName in includedAnimations.Keys)
-    {
-        if (!includedAnimations[animFileName]) excludedAnimationsReport.Add(animFileName);
-    }
-    summaryReport["excludedAnimations"] = excludedAnimationsReport;
-    SaveSummaryReport(summaryReport);
-    
-    if (smplPlayer != null)
-    {
-        smplPlayer.loop = true;
-        smplPlayer.IsInBatchMode = false;
-        smplPlayer.Stop();
-    }
-
-    Debug.Log("====== AUTOMATED BATCH PROCESS COMPLETE! ======");
-    if (quitOnFinish)
-    {
-        Debug.Log("Quitting application.");
-#if UNITY_EDITOR
-        UnityEditor.EditorApplication.isPlaying = false;
-#else
-        Application.Quit();
-#endif
-    }
-}
-
     // ===================================================================
     // =========== REPORTING =============================================
     // ===================================================================
