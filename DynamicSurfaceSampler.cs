@@ -83,23 +83,11 @@ public class DynamicSurfaceSampler : MonoBehaviour
         
         Bounds currentRoomBounds = GetRoomBounds();
 
-        // Only sample the static scene here if we are NOT saving it separately.
-        if (!saveStaticPointCloudSeparately)
+        // The static points are now assumed to be pre-cached or intentionally cleared by the BatchProcessor.
+        // We initialize the list if it's null to prevent errors.
+        if (staticSampledPoints == null)
         {
-            Debug.Log("Performing initial scan of the static environment to be included in each frame...");
             staticSampledPoints = new List<SampledPoint>();
-            SampleStaticScene(staticSampledPoints, currentRoomBounds);
-            Debug.Log($"Static scene scan complete. Captured {staticSampledPoints.Count} points.");
-        }
-        else
-        {
-            // If we are saving separately, ensure the static list is empty for this animation run.
-            if(staticSampledPoints == null)
-            {
-                staticSampledPoints = new List<SampledPoint>();
-            }
-            staticSampledPoints.Clear();
-            Debug.Log("Skipping per-animation static scan. Dynamic points will be saved alone.");
         }
 
         for (int captureFrame = 0; captureFrame < totalFramesToCapture; captureFrame++)
@@ -146,6 +134,39 @@ public class DynamicSurfaceSampler : MonoBehaviour
         Debug.Log($"Saving static scene point cloud with {points.Count} points to {fullPath}");
         SavePCD(points, fullPath);
         Debug.Log("Static scene scan and save complete.");
+    }
+
+    /// <summary>
+    /// Scans the static environment and stores the points in a private list for later use.
+    /// This should be called once by the BatchProcessor before looping through animations.
+    /// </summary>
+    public void SampleAndCacheStaticScene()
+    {
+        Debug.Log("Performing initial scan of the static environment to be cached...");
+        if (staticSampledPoints == null)
+        {
+            staticSampledPoints = new List<SampledPoint>();
+        }
+        staticSampledPoints.Clear();
+        Bounds currentRoomBounds = GetRoomBounds(); 
+        SampleStaticScene(staticSampledPoints, currentRoomBounds);
+        Debug.Log($"Static scene scan complete. Cached {staticSampledPoints.Count} points.");
+    }
+
+    /// <summary>
+    /// Clears any cached static points. Used to ensure frames only contain dynamic points.
+    /// </summary>
+    public void ClearCachedStaticPoints()
+    {
+        if (staticSampledPoints != null)
+        {
+            staticSampledPoints.Clear();
+        }
+        else
+        {
+            staticSampledPoints = new List<SampledPoint>();
+        }
+        Debug.Log("Cleared cached static points.");
     }
 
     void SampleStaticScene(List<SampledPoint> pointsList, Bounds bounds)

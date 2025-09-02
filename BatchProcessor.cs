@@ -671,13 +671,24 @@ public class BatchProcessor : MonoBehaviour
             smplPlayer.loop = false;
         }
 
-        // Before processing any animations, save the static scene point cloud if requested.
-        if (surfaceSampler != null && surfaceSampler.saveStaticPointCloudSeparately)
+        // --- Static Scene Pre-Processing ---
+        // Decide whether to save the static scene separately or pre-sample it once for all animations.
+        if (surfaceSampler != null)
         {
-            // Construct the path for the scene, but without the animation-specific subfolder.
+            if (surfaceSampler.saveStaticPointCloudSeparately)
+            {
+                Debug.Log("Saving static point cloud separately...");
             string scenePath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName);
             surfaceSampler.CaptureAndSaveStaticPointCloud(scenePath);
+                surfaceSampler.ClearCachedStaticPoints(); // Ensure no static points are added to frames
+            }
+            else
+            {
+                Debug.Log("Pre-sampling static scene once to be included in all animation frames...");
+                surfaceSampler.SampleAndCacheStaticScene();
+            }
         }
+        // --- End Static Scene Pre-Processing ---
 
         JSONObject summaryReport = CreateReportHeader();
         JSONArray processedAnimationsReport = new JSONArray();
