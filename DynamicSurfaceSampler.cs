@@ -338,58 +338,74 @@ public class DynamicSurfaceSampler : MonoBehaviour
         return defaultPointsPerUnitArea;
     }
 
-    Bounds CalculateRoomBounds(string keyword)
+Bounds CalculateRoomBounds(string keyword)
+{
+    Bounds bounds = new Bounds();
+    bool initialized = false;
+    string lowerKeyword = keyword.ToLower();
+
+    System.Action<Vector3> encapsulate = (worldPoint) =>
     {
-        Bounds bounds = new Bounds();
-        bool initialized = false;
-
-        System.Action<Vector3> encapsulate = (worldPoint) =>
-        {
-            if (!initialized)
-            {
-                bounds = new Bounds(worldPoint, Vector3.zero);
-                initialized = true;
-            }
-            else
-            {
-                bounds.Encapsulate(worldPoint);
-            }
-        };
-        
-        Debug.Log($"--- Checking for room bounds using keyword: '{keyword}' ---");
-
-        foreach (var mf in FindObjectsOfType<MeshFilter>())
-        {
-            bool hasMesh = mf.sharedMesh != null;
-            bool nameMatches = mf.name.ToLower().Contains(keyword.ToLower());
-            if (nameMatches && hasMesh)
-            {
-                foreach (var v in mf.sharedMesh.vertices) encapsulate(mf.transform.TransformPoint(v));
-            }
-        }
-        
-        foreach (var smr in FindObjectsOfType<SkinnedMeshRenderer>())
-        {
-            bool hasMesh = smr.sharedMesh != null;
-            bool nameMatches = smr.name.ToLower().Contains(keyword.ToLower());
-            if (nameMatches && hasMesh)
-            {
-                foreach (var v in smr.sharedMesh.vertices) encapsulate(smr.transform.TransformPoint(v));
-            }
-        }
-
         if (!initialized)
         {
-            Debug.LogWarning($"Could not find any 'room' objects with meshes to calculate bounds. Using a large default bound.");
-            bounds = new Bounds(Vector3.zero, new Vector3(1000, 1000, 1000));
+            bounds = new Bounds(worldPoint, Vector3.zero);
+            initialized = true;
         }
         else
         {
-            Debug.Log("Successfully calculated room bounds.");
+            bounds.Encapsulate(worldPoint);
         }
+    };
+    
+    Debug.Log($"--- Checking for room bounds using keyword: '{keyword}' ---");
 
-        return bounds;
+    foreach (var mf in FindObjectsOfType<MeshFilter>())
+    {
+        if (mf.sharedMesh == null) continue;
+
+        // NEW: Check the object's name OR its root parent's name
+        bool nameMatches = mf.name.ToLower().Contains(lowerKeyword) ||
+                           mf.transform.root.name.ToLower().Contains(lowerKeyword);
+        
+        if (nameMatches)
+        {
+            foreach (var v in mf.sharedMesh.vertices) encapsulate(mf.transform.TransformPoint(v));
+        }
     }
+    
+    foreach (var smr in FindObjectsOfType<SkinnedMeshRenderer>())
+    {
+        if (smr.sharedMesh == null) continue;
+
+        // NEW: Check the object's name OR its root parent's name
+        bool nameMatches = smr.name.ToLower().Contains(lowerKeyword) ||
+                           smr.transform.root.name.ToLower().Contains(lowerKeyword);
+                           
+        if (nameMatches)
+        {
+            foreach (var v in smr.sharedMesh.vertices) encapsulate(smr.transform.TransformPoint(v));
+        }
+    }
+
+    if (!initialized)
+    {
+        Debug.LogWarning($"Could not find any 'room' objects with meshes to calculate bounds. Using a large default bound.");
+        bounds = new Bounds(Vector3.zero, new Vector3(1000, 1000, 1000));
+    }
+    else
+    {
+        Debug.Log("Successfully calculated room bounds.");
+        // Manually add height if the bounds are flat (e.g., only a floor was found)
+        if (bounds.size.y < 0.1f)
+        {
+            bounds.Expand(new Vector3(0, 3.0f, 0)); // Adds 1.5m up and 1.5m down
+            Debug.Log("Expanded flat room bounds to give them height.");
+        }
+    }
+
+    Debug.Log($"Calculated room bounds for keyword: '{keyword}':{bounds}");
+    return bounds;
+}
     
     void SaveFrameToPCD(List<SampledPoint> points, int frameIndex, string outputSubFolder)
     {

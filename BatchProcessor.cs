@@ -712,7 +712,7 @@ public class BatchProcessor : MonoBehaviour
             }
         }
 
-        // JSONObject summaryReport = CreateReportHeader();
+        JSONObject summaryReport = CreateReportHeader();
         JSONArray processedAnimationsReport = new JSONArray();
         summaryReport["processedAnimations"] = processedAnimationsReport;
 
