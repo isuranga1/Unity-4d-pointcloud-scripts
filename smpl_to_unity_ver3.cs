@@ -99,7 +99,7 @@ public class SMPLAnimationPlayer : MonoBehaviour
     public void UpdateLiveRotation(float newRotationY)
     {
         this.currentAdditionalRotationY = newRotationY;
-        transform.localEulerAngles = modelBaseInitialRotation + new Vector3(0, this.currentAdditionalRotationY, 0);
+        // transform.localEulerAngles = modelBaseInitialRotation + new Vector3(0, this.currentAdditionalRotationY, 0);
     }
 
     void LoadAnimation(string jsonText)
@@ -182,16 +182,26 @@ public class SMPLAnimationPlayer : MonoBehaviour
 
         int clampedFrame = Mathf.Clamp(frame, 0, animData.frameCount - 1);
         
+        // --- START: NEW AND IMPROVED LOGIC ---
+
+        // 1. Set the character's overall rotation first for this frame.
+        transform.localEulerAngles = modelBaseInitialRotation + new Vector3(0, currentAdditionalRotationY, 0);
+
+        // 2. Calculate the animation's root displacement in its own local space.
         Vector3 currentAnimTranslation = animData.translations[clampedFrame];
         Vector3 animationDisplacement = currentAnimTranslation - animationStartOffset;
-        
-        Quaternion characterRotation = Quaternion.Euler(0, currentAdditionalRotationY, 0);
-        Vector3 rotatedDisplacement = characterRotation * animationDisplacement;
 
+        // 3. Calculate the final world position.
+        // We start at the base position, add the user-defined offset,
+        // and then add the animation's displacement, converting it from local to world space using the rotation we just set.
         Vector3 finalStartPosition = modelBaseInitialPosition + currentPositionalOffset;
-        Vector3 newPosition = finalStartPosition + rotatedDisplacement;
-        transform.localPosition = newPosition;
+        Vector3 worldSpaceDisplacement = transform.rotation * animationDisplacement;
+        transform.localPosition = finalStartPosition + worldSpaceDisplacement;
 
+        // --- END: NEW AND IMPROVED LOGIC ---
+
+
+        // The bone animation logic remains the same.
         for (int boneIndex = 0; boneIndex < bones.Length; boneIndex++)
         {
             string boneName = bones[boneIndex].name;
