@@ -26,8 +26,6 @@ public class BatchProcessor : MonoBehaviour
     public SMPLAnimationPlayer smplPlayer;
     public DynamicSurfaceSampler surfaceSampler;
     public SceneRecorder sceneRecorder;
-    [Tooltip("The NavMeshAgent component attached to the SMPL player. Used for accurate placement validation.")]
-    public NavMeshAgent smplNavMeshAgent;
     [Tooltip("A list of cameras to use for recording. The active camera can be switched in the UI.")]
     public List<Camera> cameras = new List<Camera>();
 
@@ -94,12 +92,6 @@ public class BatchProcessor : MonoBehaviour
         if (smplPlayer == null || surfaceSampler == null || sceneRecorder == null)
         {
             Debug.LogError("BatchProcessor Error: SMPLPlayer, SurfaceSampler, or SceneRecorder is not assigned!");
-            return;
-        }
-
-        if (smplNavMeshAgent == null)
-        {
-            Debug.LogError("BatchProcessor Error: The 'smplNavMeshAgent' has not been assigned in the Inspector!");
             return;
         }
         
@@ -551,11 +543,7 @@ public class BatchProcessor : MonoBehaviour
         }
     }
     
-    /// <summary>
-    /// /// MODIFIED: Finds a valid placement by repeatedly sampling random points on the NavMesh
-    /// and checking if the entire animation path remains on the mesh.
-    /// </summary>
-    private IEnumerator FindAndApplyValidPlacementWithNavMesh(int maxAttempts = 1000)
+    private IEnumerator FindAndApplyValidPlacementWithNavMesh(int maxAttempts = 10)
     {
         if (currentAnimationIndex < 0)
         {
@@ -564,12 +552,13 @@ public class BatchProcessor : MonoBehaviour
         }
 
         isSearchingForPlacement = true;
-        Debug.Log("Starting robust NavMesh placement search...");
+        Debug.Log("Starting efficient NavMesh placement search...");
         
         string filePath = animationFiles[currentAnimationIndex];
         string animFileName = Path.GetFileNameWithoutExtension(filePath);
         Vector3 startOffset = smplPlayer.GetModelBaseInitialPosition();
 
+        // --- FIX: Use roomBounds for generating random points ---
         Bounds roomBounds = surfaceSampler.GetRoomBounds();
         if (roomBounds.size == Vector3.zero)
         {
@@ -578,11 +567,21 @@ public class BatchProcessor : MonoBehaviour
             yield break;
         }
 
+        // 1. Pre-compute the animation's ground footprint once.
+        Rect animFootprint = PrecomputeAnimationFootprint(filePath);
+        Debug.Log($"Animation footprint for {animFileName}: {animFootprint}");
+        if (animFootprint.size == Vector2.zero)
+        {
+            Debug.LogError("Animation footprint could not be calculated. Aborting search.");
+            isSearchingForPlacement = false;
+            yield break;
+        }
+
         for (int i = 0; i < maxAttempts; i++)
         {
             if (!isSearchingForPlacement) 
             {
-                Debug.Log("Placement search was cancelled by the user.");
+                Debug.Log("Placement search was cancelled.");
                 yield break;
             }
 
@@ -592,64 +591,48 @@ public class BatchProcessor : MonoBehaviour
             Vector3 randomPoint = new Vector3(randomX, roomBounds.center.y, randomZ);
 
             NavMeshHit hit;
-            if (NavMesh.SamplePosition(randomPoint, out hit, roomBounds.size.y, NavMesh.AllAreas))
+            // Use a larger search distance to ensure we find the mesh
+            if (NavMesh.SamplePosition(randomPoint, out hit, 100.0f, NavMesh.AllAreas))
             {
-                Vector2 randomPointXZ = new Vector2(randomPoint.x, randomPoint.z);
-                Vector2 hitPointXZ = new Vector2(hit.position.x, hit.position.z);
-
-                if (Vector2.Distance(randomPointXZ, hitPointXZ) > 0.01f)
-                {
-                    continue;
-                }
-
                 Vector3 potentialStartPos = hit.position;
-
-                // ADDED: Explicitly check if the agent's volume fits at the starting point
-                // before proceeding to check the full animation path. This is more efficient.
-                bool isStartPosValid = false;
-                if (smplNavMeshAgent != null)
-                {
-                    Vector3 originalPosition = smplNavMeshAgent.transform.position;
-                    bool agentWasEnabled = smplNavMeshAgent.enabled;
-                    smplNavMeshAgent.enabled = true;
-
-                    if (smplNavMeshAgent.Warp(potentialStartPos))
-                    {
-                        isStartPosValid = true;
-                    }
-
-                    // IMPORTANT: Restore the agent's state immediately after the check.
-                    smplNavMeshAgent.Warp(originalPosition);
-                    smplNavMeshAgent.enabled = agentWasEnabled;
-                }
-
-                if (!isStartPosValid)
-                {
-                    // The agent's volume doesn't fit here. Try a new random point.
-                    continue;
-                }
-
+                Debug.Log($"Found potential start position at {potentialStartPos}");
 
                 // 3. Test rotations.
                 for (float rotY = 0; rotY < 360; rotY += placementRotationSearchStep)
                 {
                     if (!isSearchingForPlacement) { yield break; }
 
-                    // 4. Perform the final, full path check. This is more reliable than a corner check.
-                    if (CheckAnimationPathOnNavMesh(filePath, potentialStartPos, rotY))
+                    Quaternion rotation = Quaternion.Euler(0, rotY, 0);
+
+                    // 4. Quick Corner Check: See if the animation's footprint is likely on the NavMesh.
+                    Vector3 corner1 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMin);
+                    Vector3 corner2 = potentialStartPos + rotation * new Vector3(animFootprint.xMax, 0, animFootprint.yMin);
+                    Vector3 corner3 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMax);
+                    Vector3 corner4 = potentialStartPos + rotation * new Vector3(animFootprint.xMax, 0, animFootprint.yMax);
+
+                    NavMeshHit cornerHit;
+                    if (NavMesh.SamplePosition(corner1, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner2, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner3, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner4, out cornerHit, 0.1f, NavMesh.AllAreas))
                     {
-                        Debug.Log($"SUCCESS: Found valid NavMesh placement at {potentialStartPos} with rotation {rotY:F1}° on attempt {i + 1}.");
+                        Debug.Log($"Found valid corners for placement at {potentialStartPos} on attempt {i + 1}. Starting final path check...");
+                        // 5. If corners are good, perform the final, full path check.
+                        if (CheckAnimationPathOnNavMesh(filePath, potentialStartPos, rotY))
+                        {
+                            Debug.Log($"Found valid NavMesh placement at {potentialStartPos} on attempt {i + 1}.");
 
-                        liveOffset = potentialStartPos - startOffset;
-                        liveRotationY = rotY;
-                        tunedOffsets[animFileName] = liveOffset;
-                        tunedRotations[animFileName] = liveRotationY;
+                            liveOffset = potentialStartPos - startOffset;
+                            liveRotationY = rotY;
+                            tunedOffsets[animFileName] = liveOffset;
+                            tunedRotations[animFileName] = liveRotationY;
 
-                        smplPlayer.UpdateLiveOffset(liveOffset);
-                        smplPlayer.UpdateLiveRotation(liveRotationY);
-                        isDirty = true;
-                        isSearchingForPlacement = false;
-                        yield break; // Success!
+                            smplPlayer.UpdateLiveOffset(liveOffset);
+                            smplPlayer.UpdateLiveRotation(liveRotationY);
+                            isDirty = true;
+                            isSearchingForPlacement = false;
+                            yield break; // Success!
+                        }
                     }
                 }
             }
@@ -660,26 +643,14 @@ public class BatchProcessor : MonoBehaviour
         isSearchingForPlacement = false;
     }
     
-    /// <summary>
-    /// MODIFIED: Uses a NavMeshAgent to provide a more physically-accurate check,
-    /// ensuring the character's entire volume remains on the NavMesh for every frame.
-    /// </summary>
-    private bool CheckAnimationPathOnNavMesh(string jsonFilePath, Vector3 startWorldPos, float rotationY)
+  private bool CheckAnimationPathOnNavMesh(string jsonFilePath, Vector3 startWorldPos, float rotationY)
     {
-        if (smplNavMeshAgent == null) return false;
-
-        // Store the agent's current state so we can restore it later.
-        Vector3 originalPosition = smplNavMeshAgent.transform.position;
-        bool agentWasEnabled = smplNavMeshAgent.enabled;
-        smplNavMeshAgent.enabled = true; // Agent must be enabled to use Warp.
-
-        bool isValid = true;
         try
         {
             string jsonText = File.ReadAllText(jsonFilePath);
             var json = JSON.Parse(jsonText);
             var transNode = json["trans"];
-            if (transNode.Count == 0) return true;
+            if (transNode.Count == 0) return true; // Empty animation is valid.
 
             Vector3 firstFrameMayaPos = new Vector3(transNode[0][0], transNode[0][1], transNode[0][2]);
             Vector3 animationStartOffset = smplPlayer.ConvertMayaToUnity(firstFrameMayaPos);
@@ -691,31 +662,26 @@ public class BatchProcessor : MonoBehaviour
                 Vector3 currentFrameUnityPos = smplPlayer.ConvertMayaToUnity(mayaPos);
                 Vector3 displacement = currentFrameUnityPos - animationStartOffset;
                 Vector3 predictedWorldPos = startWorldPos + (characterRotation * displacement);
+                Debug.Log($"Checking NavMesh position for frame {frame}: {predictedWorldPos}");
 
-                // Warp the agent to the predicted position for this frame.
-                // This is a teleport, it does not use pathfinding.
-                if (!smplNavMeshAgent.Warp(predictedWorldPos))
+                // --- MODIFICATION: Check the path on the 2D plane, ignoring animation's Y movement ---
+                Vector3 groundCheckPos = new Vector3(predictedWorldPos.x, startWorldPos.y, predictedWorldPos.z);
+
+                NavMeshHit navHit;
+                if (!NavMesh.SamplePosition(groundCheckPos, out navHit, 0.1f, NavMesh.AllAreas))
                 {
-                    // Warp returns false if the target position is not on a NavMesh.
-                    // This is our primary validation check.
-                    isValid = false;
-                    break;
+                    // This frame is not on a valid NavMesh position.
+                    return false; 
                 }
             }
         }
-        catch (Exception e)
+        catch(Exception e)
         {
             Debug.LogError($"Error checking animation path on NavMesh: {e.Message}");
-            isValid = false;
-        }
-        finally
-        {
-            // IMPORTANT: Restore the agent to its original state to avoid side-effects.
-            smplNavMeshAgent.Warp(originalPosition);
-            smplNavMeshAgent.enabled = agentWasEnabled;
+            return false; // Assume failure on error.
         }
 
-        return isValid;
+        return true; // Success! All frames were on the NavMesh.
     }
 
     // ===================================================================

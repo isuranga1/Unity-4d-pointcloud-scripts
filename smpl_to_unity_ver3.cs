@@ -51,21 +51,47 @@ public class SMPLAnimationPlayer : MonoBehaviour
         public Quaternion[,] poses;
     }
 
-    void Start()
+void Start()
+{
+    if (skinnedMeshRenderer == null)
+        skinnedMeshRenderer = GetComponentInChildren<SkinnedMeshRenderer>();
+
+    if (skinnedMeshRenderer == null)
     {
-        if (skinnedMeshRenderer == null)
-            skinnedMeshRenderer = GetComponentInChildren<SkinnedMeshRenderer>();
-
-        if (skinnedMeshRenderer == null)
-        {
-            Debug.LogError("SkinnedMeshRenderer not found!");
-            return;
-        }
-
-        bones = skinnedMeshRenderer.bones;
-        modelBaseInitialPosition = transform.localPosition;
-        modelBaseInitialRotation = transform.localEulerAngles;
+        Debug.LogError("SkinnedMeshRenderer not found!");
+        return;
     }
+
+    bones = skinnedMeshRenderer.bones;
+
+    // *** MODIFIED SECTION START ***
+    // Find the Pelvis bone to set the initial position
+    Transform pelvisBone = null;
+    foreach (Transform bone in bones)
+    {
+        if (bone.name == "Pelvis")
+        {
+            pelvisBone = bone;
+            break; // Found it, no need to search further
+        }
+    }
+
+    if (pelvisBone != null)
+    {
+        // Set the base position to the Pelvis bone's initial local position
+        modelBaseInitialPosition = pelvisBone.localPosition;
+        Debug.Log($"Model base position set to Pelvis bone's initial position: {modelBaseInitialPosition}");
+    }
+    else
+    {
+        // Fallback to the original behavior if Pelvis bone is not found
+        modelBaseInitialPosition = transform.localPosition;
+        Debug.LogWarning("Pelvis bone not found. Using transform's localPosition as the base.");
+    }
+    // *** MODIFIED SECTION END ***
+    
+    modelBaseInitialRotation = transform.localEulerAngles;
+}
 
     void Update()
     {
