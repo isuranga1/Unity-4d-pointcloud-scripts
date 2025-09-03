@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.AI;
 using System;
 using System.Collections;
 using System.IO;
@@ -474,7 +475,7 @@ public class BatchProcessor : MonoBehaviour
         {
             if (GUI.Button(new Rect(175, yPos, 145, 20), "Find Valid Placement"))
             {
-                StartCoroutine(FindAndApplyValidPlacement());
+                StartCoroutine(FindAndApplyValidPlacementWithNavMesh());
             }
         }
         yPos += 30;
@@ -505,13 +506,45 @@ public class BatchProcessor : MonoBehaviour
     // =========== DYNAMIC PLACEMENT =====================================
     // ===================================================================
 
-    private IEnumerator FindAndApplyValidPlacement()
+    /// <summary>
+    /// Pre-calculates the 2D bounding box ("footprint") of an animation's root motion.
+    /// </summary>
+    private Rect PrecomputeAnimationFootprint(string jsonFilePath)
     {
-        if (characterController == null)
+        try
         {
-            Debug.LogError("Character Controller is not assigned in the Inspector. Cannot find placement.");
-            yield break;
+            string jsonText = File.ReadAllText(jsonFilePath);
+            var json = JSON.Parse(jsonText);
+            var transNode = json["trans"];
+            if (transNode.Count == 0) return Rect.zero;
+
+            Vector3 firstFrameMayaPos = new Vector3(transNode[0][0], transNode[0][1], transNode[0][2]);
+            Vector3 animationStartOffset = smplPlayer.ConvertMayaToUnity(firstFrameMayaPos);
+
+            float minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+
+            for (int frame = 0; frame < transNode.Count; frame++)
+            {
+                var mayaPos = new Vector3(transNode[frame][0], transNode[frame][1], transNode[frame][2]);
+                Vector3 currentFrameUnityPos = smplPlayer.ConvertMayaToUnity(mayaPos);
+                Vector3 displacement = currentFrameUnityPos - animationStartOffset;
+
+                if (displacement.x < minX) minX = displacement.x;
+                if (displacement.x > maxX) maxX = displacement.x;
+                if (displacement.z < minZ) minZ = displacement.z;
+                if (displacement.z > maxZ) maxZ = displacement.z;
+            }
+            return new Rect(minX, minZ, maxX - minX, maxZ - minZ);
         }
+        catch (Exception e)
+        {
+            Debug.LogError($"Could not precompute animation footprint for {jsonFilePath}: {e.Message}");
+            return Rect.zero;
+        }
+    }
+    
+    private IEnumerator FindAndApplyValidPlacementWithNavMesh(int maxAttempts = 10)
+    {
         if (currentAnimationIndex < 0)
         {
             Debug.LogError("No animation loaded. Cannot find placement.");
@@ -519,149 +552,141 @@ public class BatchProcessor : MonoBehaviour
         }
 
         isSearchingForPlacement = true;
-        Debug.Log("Starting search for a valid placement...");
+        Debug.Log("Starting efficient NavMesh placement search...");
+        
+        string filePath = animationFiles[currentAnimationIndex];
+        string animFileName = Path.GetFileNameWithoutExtension(filePath);
+        Vector3 startOffset = smplPlayer.GetModelBaseInitialPosition();
 
-        // Get the room bounds at the start of the search.
+        // --- FIX: Use roomBounds for generating random points ---
         Bounds roomBounds = surfaceSampler.GetRoomBounds();
-        if(roomBounds.size == Vector3.zero)
+        if (roomBounds.size == Vector3.zero)
         {
-            Debug.LogError("Could not determine room bounds. Aborting placement search. Ensure 'roomObjectKeyword' in DynamicSurfaceSampler is set correctly and room objects are active.");
+            Debug.LogError("Could not determine room bounds. Aborting placement search.");
             isSearchingForPlacement = false;
             yield break;
         }
-        Debug.Log($"Search constrained to room bounds: Center={roomBounds.center}, Size={roomBounds.size}");
 
-        try
+        // 1. Pre-compute the animation's ground footprint once.
+        Rect animFootprint = PrecomputeAnimationFootprint(filePath);
+        Debug.Log($"Animation footprint for {animFileName}: {animFootprint}");
+        if (animFootprint.size == Vector2.zero)
         {
-            string filePath = animationFiles[currentAnimationIndex];
-            string animFileName = Path.GetFileNameWithoutExtension(filePath);
-            Vector3 searchCenter = smplPlayer.transform.position;
-            Vector3 startOffset = smplPlayer.GetModelBaseInitialPosition();
+            Debug.LogError("Animation footprint could not be calculated. Aborting search.");
+            isSearchingForPlacement = false;
+            yield break;
+        }
 
-            float halfX = placementSearchAreaSize.x / 2f;
-            float halfZ = placementSearchAreaSize.y / 2f;
-
-            for (float x = -halfX; x <= halfX; x += placementSearchGridDensity)
+        for (int i = 0; i < maxAttempts; i++)
+        {
+            if (!isSearchingForPlacement) 
             {
-                for (float z = -halfZ; z <= halfZ; z += placementSearchGridDensity)
+                Debug.Log("Placement search was cancelled.");
+                yield break;
+            }
+
+            // 2. Get a random starting point within the room bounds.
+            float randomX = UnityEngine.Random.Range(roomBounds.min.x, roomBounds.max.x);
+            float randomZ = UnityEngine.Random.Range(roomBounds.min.z, roomBounds.max.z);
+            Vector3 randomPoint = new Vector3(randomX, roomBounds.center.y, randomZ);
+
+            NavMeshHit hit;
+            // Use a larger search distance to ensure we find the mesh
+            if (NavMesh.SamplePosition(randomPoint, out hit, 100.0f, NavMesh.AllAreas))
+            {
+                Vector3 potentialStartPos = hit.position;
+                Debug.Log($"Found potential start position at {potentialStartPos}");
+
+                // 3. Test rotations.
+                for (float rotY = 0; rotY < 360; rotY += placementRotationSearchStep)
                 {
                     if (!isSearchingForPlacement) { yield break; }
 
-                    Vector3 testWorldPos = searchCenter + new Vector3(x, 0, z);
-                    
-                    // Only proceed if the test point is within the room.
-                    if (roomBounds.Contains(testWorldPos))
+                    Quaternion rotation = Quaternion.Euler(0, rotY, 0);
+
+                    // 4. Quick Corner Check: See if the animation's footprint is likely on the NavMesh.
+                    Vector3 corner1 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMin);
+                    Vector3 corner2 = potentialStartPos + rotation * new Vector3(animFootprint.xMax, 0, animFootprint.yMin);
+                    Vector3 corner3 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMax);
+                    Vector3 corner4 = potentialStartPos + rotation * new Vector3(animFootprint.xMax, 0, animFootprint.yMax);
+
+                    NavMeshHit cornerHit;
+                    if (NavMesh.SamplePosition(corner1, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner2, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner3, out cornerHit, 0.1f, NavMesh.AllAreas) &&
+                        NavMesh.SamplePosition(corner4, out cornerHit, 0.1f, NavMesh.AllAreas))
                     {
-                        RaycastHit hit;
-                        if (Physics.Raycast(testWorldPos + Vector3.up * 0.1f, Vector3.down, out hit, 2f, floorLayer))
+                        Debug.Log($"Found valid corners for placement at {potentialStartPos} on attempt {i + 1}. Starting final path check...");
+                        // 5. If corners are good, perform the final, full path check.
+                        if (CheckAnimationPathOnNavMesh(filePath, potentialStartPos, rotY))
                         {
-                            Vector3 groundedPos = hit.point;
-                            
-                            if (placementRotationSearchStep > 0)
-                            {
-                                for (float rotY = 0; rotY < 360; rotY += placementRotationSearchStep)
-                                {
-                                    if (!isSearchingForPlacement) { yield break; }
+                            Debug.Log($"Found valid NavMesh placement at {potentialStartPos} on attempt {i + 1}.");
 
-                                    if (!CheckAnimationPathForCollisions(filePath, groundedPos, rotY))
-                                    {
-                                        Debug.Log($"Found valid placement at {groundedPos} with rotation {rotY}. Applying new offset and rotation.");
-                                        
-                                        liveOffset = groundedPos - startOffset;
-                                        liveRotationY = rotY;
+                            liveOffset = potentialStartPos - startOffset;
+                            liveRotationY = rotY;
+                            tunedOffsets[animFileName] = liveOffset;
+                            tunedRotations[animFileName] = liveRotationY;
 
-                                        tunedOffsets[animFileName] = liveOffset;
-                                        tunedRotations[animFileName] = liveRotationY;
-
-                                        smplPlayer.UpdateLiveOffset(liveOffset);
-                                        smplPlayer.UpdateLiveRotation(liveRotationY);
-                                        isDirty = true;
-                                        yield break; 
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                if (!CheckAnimationPathForCollisions(filePath, groundedPos, liveRotationY))
-                                {
-                                    Debug.Log($"Found valid placement at {groundedPos} (using current rotation). Applying new offset.");
-                                    
-                                    liveOffset = groundedPos - startOffset;
-                                    tunedOffsets[animFileName] = liveOffset;
-                                    smplPlayer.UpdateLiveOffset(liveOffset);
-                                    isDirty = true;
-                                    yield break;
-                                }
-                            }
+                            smplPlayer.UpdateLiveOffset(liveOffset);
+                            smplPlayer.UpdateLiveRotation(liveRotationY);
+                            isDirty = true;
+                            isSearchingForPlacement = false;
+                            yield break; // Success!
                         }
                     }
-                    yield return null; 
                 }
             }
+            yield return null; 
+        }
 
-            Debug.LogWarning("Could not find a valid collision-free placement in the search area for any rotation.");
-        }
-        finally
-        {
-            if (!isSearchingForPlacement)
-            {
-                Debug.Log("Placement search was cancelled by user.");
-            }
-            isSearchingForPlacement = false;
-        }
+        Debug.LogWarning($"Could not find a valid placement after {maxAttempts} attempts.");
+        isSearchingForPlacement = false;
     }
     
-    private bool CheckAnimationPathForCollisions(string jsonFilePath, Vector3 startWorldPos, float rotationY)
+  private bool CheckAnimationPathOnNavMesh(string jsonFilePath, Vector3 startWorldPos, float rotationY)
     {
         try
         {
             string jsonText = File.ReadAllText(jsonFilePath);
             var json = JSON.Parse(jsonText);
             var transNode = json["trans"];
-            int frameCount = transNode.Count;
-
-            if (frameCount == 0) return false;
+            if (transNode.Count == 0) return true; // Empty animation is valid.
 
             Vector3 firstFrameMayaPos = new Vector3(transNode[0][0], transNode[0][1], transNode[0][2]);
             Vector3 animationStartOffset = smplPlayer.ConvertMayaToUnity(firstFrameMayaPos);
             Quaternion characterRotation = Quaternion.Euler(0, rotationY, 0);
 
-            for (int frame = 0; frame < frameCount; frame++)
+            for (int frame = 0; frame < transNode.Count; frame++)
             {
-                float jsonX = transNode[frame][0];
-                float jsonZ = transNode[frame][1];
-                float jsonY = transNode[frame][2];
-                jsonY -= smplPlayer.yOffset;
-                var mayaPos = new Vector3(jsonX, jsonZ, jsonY);
+                var mayaPos = new Vector3(transNode[frame][0], transNode[frame][1], transNode[frame][2]);
                 Vector3 currentFrameUnityPos = smplPlayer.ConvertMayaToUnity(mayaPos);
-
                 Vector3 displacement = currentFrameUnityPos - animationStartOffset;
-                Vector3 rotatedDisplacement = characterRotation * displacement;
-                Vector3 predictedWorldPos = startWorldPos + rotatedDisplacement;
+                Vector3 predictedWorldPos = startWorldPos + (characterRotation * displacement);
+                Debug.Log($"Checking NavMesh position for frame {frame}: {predictedWorldPos}");
 
-                Vector3 capsuleCenter = predictedWorldPos + characterController.center;
-                Vector3 p1 = capsuleCenter + Vector3.up * (characterController.height / 2 - characterController.radius);
-                Vector3 p2 = capsuleCenter - Vector3.up * (characterController.height / 2 - characterController.radius);
+                // --- MODIFICATION: Check the path on the 2D plane, ignoring animation's Y movement ---
+                Vector3 groundCheckPos = new Vector3(predictedWorldPos.x, startWorldPos.y, predictedWorldPos.z);
 
-                if (Physics.CheckCapsule(p1, p2, characterController.radius, placementCollisionLayerMask, QueryTriggerInteraction.Ignore))
+                NavMeshHit navHit;
+                if (!NavMesh.SamplePosition(groundCheckPos, out navHit, 0.1f, NavMesh.AllAreas))
                 {
-                    return true; // Collision detected
+                    // This frame is not on a valid NavMesh position.
+                    return false; 
                 }
             }
         }
         catch(Exception e)
         {
-            Debug.LogError($"Error checking animation path: {e.Message}");
-            return true; // Assume collision on error to be safe
+            Debug.LogError($"Error checking animation path on NavMesh: {e.Message}");
+            return false; // Assume failure on error.
         }
 
-        return false; // No collisions found
+        return true; // Success! All frames were on the NavMesh.
     }
 
     // ===================================================================
     // =========== STAGE 2: AUTOMATED BATCH RUNNER =======================
     // ===================================================================
-
     private IEnumerator RunAutomatedBatch()
     {
         Debug.Log("====== SWITCHING TO AUTOMATED BATCH MODE ======");
@@ -671,16 +696,14 @@ public class BatchProcessor : MonoBehaviour
             smplPlayer.loop = false;
         }
 
-        // --- Static Scene Pre-Processing ---
-        // Decide whether to save the static scene separately or pre-sample it once for all animations.
         if (surfaceSampler != null)
         {
             if (surfaceSampler.saveStaticPointCloudSeparately)
             {
                 Debug.Log("Saving static point cloud separately...");
-            string scenePath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName);
-            surfaceSampler.CaptureAndSaveStaticPointCloud(scenePath);
-                surfaceSampler.ClearCachedStaticPoints(); // Ensure no static points are added to frames
+                string scenePath = Path.Combine(environmentFolderName, FormattedEnvironmentName, sceneFolderName);
+                surfaceSampler.CaptureAndSaveStaticPointCloud(scenePath);
+                surfaceSampler.ClearCachedStaticPoints();
             }
             else
             {
@@ -688,9 +711,8 @@ public class BatchProcessor : MonoBehaviour
                 surfaceSampler.SampleAndCacheStaticScene();
             }
         }
-        // --- End Static Scene Pre-Processing ---
 
-        JSONObject summaryReport = CreateReportHeader();
+        // JSONObject summaryReport = CreateReportHeader();
         JSONArray processedAnimationsReport = new JSONArray();
         summaryReport["processedAnimations"] = processedAnimationsReport;
 
@@ -838,6 +860,9 @@ public class BatchProcessor : MonoBehaviour
     #endif
         }
     }
+
+
+
 
 
     // ===================================================================
@@ -1044,3 +1069,4 @@ public class BatchProcessor : MonoBehaviour
         }
     }
 }
+
