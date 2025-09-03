@@ -77,6 +77,8 @@ public class BatchProcessor : MonoBehaviour
     private int activeCameraIndex = 0;
     private string currentAnimationDescription = "No description available.";
     private bool isSearchingForPlacement = false;
+    private bool isAutoPlacing = false; // Flag for the new automated placement process
+    private string autoPlacementStatus = ""; // Status message for the UI
 
     // --- Helper properties to generate the new folder structure consistently ---
     /// <summary>Formats the environment name with its number, e.g., "Bathroom_001".</summary>
@@ -402,10 +404,14 @@ public class BatchProcessor : MonoBehaviour
             padding = new RectOffset(5, 5, 5, 5)
         };
 
-        GUI.Box(new Rect(10, 10, 330, 480), "Animation Tuner & Batcher");
+        GUI.Box(new Rect(10, 10, 330, 550), "Animation Tuner & Batcher"); // Increased box height
         string animFileName = Path.GetFileNameWithoutExtension(animationFiles[currentAnimationIndex]);
         
         float yPos = 40;
+
+        // --- Controls that should be disabled during automated processes ---
+        bool controlsEnabled = !isSearchingForPlacement && !isAutoPlacing;
+        GUI.enabled = controlsEnabled;
 
         bool isIncluded = includedAnimations[animFileName];
         includedAnimations[animFileName] = GUI.Toggle(new Rect(20, yPos, 300, 20), isIncluded, $" Process Animation: {animFileName}");
@@ -462,6 +468,8 @@ public class BatchProcessor : MonoBehaviour
             SnapToFloor();
         }
 
+        GUI.enabled = true; // --- Re-enable GUI for process-specific controls ---
+
         if (isSearchingForPlacement)
         {
             GUI.backgroundColor = new Color(1f, 0.8f, 0.8f); // Reddish color for stop button
@@ -473,12 +481,42 @@ public class BatchProcessor : MonoBehaviour
         }
         else
         {
+            GUI.enabled = !isAutoPlacing; // Can't start a manual search while auto-placing
             if (GUI.Button(new Rect(175, yPos, 145, 20), "Find Valid Placement"))
             {
-                StartCoroutine(FindAndApplyValidPlacementWithNavMesh());
+                StartCoroutine(FindAndApplyValidPlacementWithNavMesh(success => {
+                    if (success) Debug.Log("Manual placement search was successful.");
+                    else Debug.LogWarning("Manual placement search failed or was cancelled.");
+                }));
             }
+            GUI.enabled = true; // Reset
         }
         yPos += 30;
+        
+        // --- NEW: Automated Placement Section ---
+        if (isAutoPlacing)
+        {
+            GUI.Label(new Rect(20, yPos, 215, 25), autoPlacementStatus);
+            GUI.backgroundColor = new Color(1f, 0.8f, 0.8f); // Red
+            if (GUI.Button(new Rect(240, yPos, 80, 25), "Stop"))
+            {
+                isAutoPlacing = false; // Signal the coroutine to stop
+            }
+            GUI.backgroundColor = Color.white;
+        }
+        else
+        {
+            GUI.enabled = !isSearchingForPlacement; // Can't start auto-place if a manual search is running
+            GUI.backgroundColor = new Color(0.8f, 0.9f, 1f); // Light blue
+            if (GUI.Button(new Rect(20, yPos, 300, 25), "Run Auto-Placements"))
+            {
+                StartCoroutine(RunAutomatedPlacements());
+            }
+            GUI.backgroundColor = Color.white;
+            GUI.enabled = true; // Reset
+        }
+        yPos += 35;
+
 
         string cameraName = (cameras.Count > 0 && cameras[activeCameraIndex] != null) ? cameras[activeCameraIndex].name : "None";
         GUI.Label(new Rect(20, yPos, 200, 20), $"Active Camera: {cameraName}");
@@ -487,6 +525,8 @@ public class BatchProcessor : MonoBehaviour
             SwitchToNextCamera();
         }
         yPos += 30;
+
+        GUI.enabled = controlsEnabled; // Re-apply main disable for final button
 
         int includedCount = includedAnimations.Values.Count(b => b);
         GUI.Label(new Rect(20, yPos, 300, 20), $"{includedCount} / {animationFiles.Count} animations selected for batch.");
@@ -499,6 +539,8 @@ public class BatchProcessor : MonoBehaviour
             StartCoroutine(RunAutomatedBatch());
         }
         GUI.backgroundColor = Color.white;
+        
+        GUI.enabled = true; // --- IMPORTANT: Final reset to ensure GUI is enabled for next frame ---
     }
 
 
@@ -543,11 +585,12 @@ public class BatchProcessor : MonoBehaviour
         }
     }
     
-    private IEnumerator FindAndApplyValidPlacementWithNavMesh(int maxAttempts = 10)
+    private IEnumerator FindAndApplyValidPlacementWithNavMesh(Action<bool> onComplete, int maxAttempts = 20)
     {
         if (currentAnimationIndex < 0)
         {
             Debug.LogError("No animation loaded. Cannot find placement.");
+            onComplete?.Invoke(false);
             yield break;
         }
 
@@ -558,22 +601,22 @@ public class BatchProcessor : MonoBehaviour
         string animFileName = Path.GetFileNameWithoutExtension(filePath);
         Vector3 startOffset = smplPlayer.GetModelBaseInitialPosition();
 
-        // --- FIX: Use roomBounds for generating random points ---
         Bounds roomBounds = surfaceSampler.GetRoomBounds();
         if (roomBounds.size == Vector3.zero)
         {
             Debug.LogError("Could not determine room bounds. Aborting placement search.");
             isSearchingForPlacement = false;
+            onComplete?.Invoke(false);
             yield break;
         }
 
-        // 1. Pre-compute the animation's ground footprint once.
         Rect animFootprint = PrecomputeAnimationFootprint(filePath);
         Debug.Log($"Animation footprint for {animFileName}: {animFootprint}");
         if (animFootprint.size == Vector2.zero)
         {
             Debug.LogError("Animation footprint could not be calculated. Aborting search.");
             isSearchingForPlacement = false;
+            onComplete?.Invoke(false);
             yield break;
         }
 
@@ -581,30 +624,30 @@ public class BatchProcessor : MonoBehaviour
         {
             if (!isSearchingForPlacement) 
             {
-                Debug.Log("Placement search was cancelled.");
+                Debug.Log("Placement search was cancelled by the user.");
+                onComplete?.Invoke(false);
                 yield break;
             }
 
-            // 2. Get a random starting point within the room bounds.
             float randomX = UnityEngine.Random.Range(roomBounds.min.x, roomBounds.max.x);
             float randomZ = UnityEngine.Random.Range(roomBounds.min.z, roomBounds.max.z);
             Vector3 randomPoint = new Vector3(randomX, roomBounds.center.y, randomZ);
 
             NavMeshHit hit;
-            // Use a larger search distance to ensure we find the mesh
             if (NavMesh.SamplePosition(randomPoint, out hit, 100.0f, NavMesh.AllAreas))
             {
                 Vector3 potentialStartPos = hit.position;
-                Debug.Log($"Found potential start position at {potentialStartPos}");
-
-                // 3. Test rotations.
                 for (float rotY = 0; rotY < 360; rotY += placementRotationSearchStep)
                 {
-                    if (!isSearchingForPlacement) { yield break; }
+                    if (!isSearchingForPlacement) 
+                    {
+                        Debug.Log("Placement search was cancelled by the user.");
+                        onComplete?.Invoke(false);
+                        yield break; 
+                    }
 
                     Quaternion rotation = Quaternion.Euler(0, rotY, 0);
 
-                    // 4. Quick Corner Check: See if the animation's footprint is likely on the NavMesh.
                     Vector3 corner1 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMin);
                     Vector3 corner2 = potentialStartPos + rotation * new Vector3(animFootprint.xMax, 0, animFootprint.yMin);
                     Vector3 corner3 = potentialStartPos + rotation * new Vector3(animFootprint.xMin, 0, animFootprint.yMax);
@@ -616,10 +659,9 @@ public class BatchProcessor : MonoBehaviour
                         NavMesh.SamplePosition(corner3, out cornerHit, 0.1f, NavMesh.AllAreas) &&
                         NavMesh.SamplePosition(corner4, out cornerHit, 0.1f, NavMesh.AllAreas))
                     {
-                        Debug.Log($"Found valid corners for placement at {potentialStartPos} on attempt {i + 1}. Starting final path check...");
-                        // 5. If corners are good, perform the final, full path check.
                         if (CheckAnimationPathOnNavMesh(filePath, potentialStartPos, rotY))
                         {
+                            potentialStartPos.y = potentialStartPos.y - 0.1f ;
                             Debug.Log($"Found valid NavMesh placement at {potentialStartPos} on attempt {i + 1}.");
 
                             liveOffset = potentialStartPos - startOffset;
@@ -631,7 +673,8 @@ public class BatchProcessor : MonoBehaviour
                             smplPlayer.UpdateLiveRotation(liveRotationY);
                             isDirty = true;
                             isSearchingForPlacement = false;
-                            yield break; // Success!
+                            onComplete?.Invoke(true); // Success!
+                            yield break; 
                         }
                     }
                 }
@@ -639,11 +682,83 @@ public class BatchProcessor : MonoBehaviour
             yield return null; 
         }
 
-        Debug.LogWarning($"Could not find a valid placement after {maxAttempts} attempts.");
+        Debug.LogWarning($"Could not find a valid placement for '{animFileName}' after {maxAttempts} attempts.");
         isSearchingForPlacement = false;
+        onComplete?.Invoke(false); // Failure
+    }
+
+    /// <summary>
+    /// Coroutine to automatically find and save placements for all animations.
+    /// It iterates through each animation, attempts to find a valid placement,
+    /// saves it on success, and marks it for exclusion on failure.
+    /// </summary>
+    private IEnumerator RunAutomatedPlacements()
+    {
+        isAutoPlacing = true;
+        autoPlacementStatus = "Starting...";
+        Debug.Log("====== STARTING AUTOMATED PLACEMENT PROCESS ======");
+        
+        var animationsToProcess = new List<string>(animationFiles);
+        var excludedByThisRun = new List<string>();
+        var placedByThisRun = new List<string>();
+
+        for (int i = 0; i < animationsToProcess.Count; i++)
+        {
+            if (!isAutoPlacing)
+            {
+                Debug.LogWarning("Automated placement process was stopped by the user.");
+                break; // Exit the loop if user cancelled
+            }
+
+            string animFileName = Path.GetFileNameWithoutExtension(animationsToProcess[i]);
+            autoPlacementStatus = $"({i + 1}/{animationsToProcess.Count}): {animFileName}";
+            Debug.Log($"--- Attempting to place animation {i + 1}/{animationsToProcess.Count}: {animFileName} ---");
+
+            LoadAnimationForTuning(i);
+            yield return new WaitForSeconds(0.1f);
+
+            bool placementFound = false;
+            // Use a callback to get the success/failure result from the search coroutine
+            yield return StartCoroutine(FindAndApplyValidPlacementWithNavMesh(success => {
+                placementFound = success;
+            }, maxAttempts: 50)); // More attempts for the automated process
+
+            if (placementFound)
+            {
+                Debug.Log($"Successfully found placement for '{animFileName}'. Saving offsets.");
+                SaveCurrentOffset();
+                placedByThisRun.Add(animFileName);
+            }
+            else
+            {
+                Debug.LogWarning($"Failed to find placement for '{animFileName}'. Marking as excluded.");
+                includedAnimations[animFileName] = false;
+                excludedByThisRun.Add(animFileName);
+            }
+
+            yield return null; // Yield a frame to let UI update and check for stop signal
+        }
+        
+        Debug.Log("Saving the updated list of excluded animations...");
+        SaveExcludedAnimationsConfig();
+        isDirty = true;
+        
+        Debug.Log("====== AUTOMATED PLACEMENT PROCESS COMPLETE! ======");
+        Debug.Log($"Successfully placed: {placedByThisRun.Count} animations.");
+        Debug.Log($"Failed to place (and excluded): {excludedByThisRun.Count} animations.");
+
+        // Cleanup
+        autoPlacementStatus = "";
+        isAutoPlacing = false;
+
+        // Reload the current animation to reflect any UI changes (e.g., the include/exclude toggle)
+        if (currentAnimationIndex >= 0)
+        {
+            LoadAnimationForTuning(currentAnimationIndex);
+        }
     }
     
-  private bool CheckAnimationPathOnNavMesh(string jsonFilePath, Vector3 startWorldPos, float rotationY)
+    private bool CheckAnimationPathOnNavMesh(string jsonFilePath, Vector3 startWorldPos, float rotationY)
     {
         try
         {
@@ -662,15 +777,12 @@ public class BatchProcessor : MonoBehaviour
                 Vector3 currentFrameUnityPos = smplPlayer.ConvertMayaToUnity(mayaPos);
                 Vector3 displacement = currentFrameUnityPos - animationStartOffset;
                 Vector3 predictedWorldPos = startWorldPos + (characterRotation * displacement);
-                Debug.Log($"Checking NavMesh position for frame {frame}: {predictedWorldPos}");
 
-                // --- MODIFICATION: Check the path on the 2D plane, ignoring animation's Y movement ---
                 Vector3 groundCheckPos = new Vector3(predictedWorldPos.x, startWorldPos.y, predictedWorldPos.z);
 
                 NavMeshHit navHit;
                 if (!NavMesh.SamplePosition(groundCheckPos, out navHit, 0.1f, NavMesh.AllAreas))
                 {
-                    // This frame is not on a valid NavMesh position.
                     return false; 
                 }
             }
@@ -860,10 +972,6 @@ public class BatchProcessor : MonoBehaviour
     #endif
         }
     }
-
-
-
-
 
     // ===================================================================
     // =========== REPORTING =============================================
@@ -1069,4 +1177,3 @@ public class BatchProcessor : MonoBehaviour
         }
     }
 }
-
