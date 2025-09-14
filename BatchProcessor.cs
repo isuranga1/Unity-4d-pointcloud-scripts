@@ -70,6 +70,7 @@ public class BatchProcessor : MonoBehaviour
     private int currentAnimationIndex = -1;
     private Vector3 liveOffset;
     private float liveRotationY;
+    private float livePlaybackSpeed = 1f;
     private bool isDirty = false;
     private int activeCameraIndex = 0;
     private string currentAnimationDescription = "No description available.";
@@ -361,6 +362,7 @@ public class BatchProcessor : MonoBehaviour
         liveOffset = offsetToLoad;
         liveRotationY = rotationToLoad;
         smplPlayer.LoadAndPlayAnimation(filePath, offsetToLoad, rotationToLoad);
+        smplPlayer.playbackSpeed = livePlaybackSpeed;
     }
 
     private void SaveCurrentOffset()
@@ -493,6 +495,10 @@ public class BatchProcessor : MonoBehaviour
         
         GUI.Label(new Rect(20, yPos, 80, 20), $"Rot Y: {liveRotationY:F1}");
         liveRotationY = GUI.HorizontalSlider(new Rect(90, yPos + 2.5f, 240, 20), liveRotationY, -180f, 180f);
+        yPos += 30;
+
+        GUI.Label(new Rect(20, yPos, 120, 20), $"Playback Speed: {livePlaybackSpeed:F1}x");
+        livePlaybackSpeed = GUI.HorizontalSlider(new Rect(140, yPos + 2.5f, 190, 20), livePlaybackSpeed, 0.1f, 5f);
         yPos += 35;
 
         if (GUI.changed)
@@ -501,6 +507,7 @@ public class BatchProcessor : MonoBehaviour
             tunedRotations[animFileName] = liveRotationY;
             smplPlayer.UpdateLiveOffset(liveOffset);
             smplPlayer.UpdateLiveRotation(liveRotationY);
+            smplPlayer.playbackSpeed = livePlaybackSpeed;
             isDirty = true;
         }
 
@@ -978,6 +985,7 @@ public class BatchProcessor : MonoBehaviour
             Debug.Log($"Starting Pass 1: Point Cloud Sampling for '{animFileName}'.");
             smplPlayer.IsInBatchMode = true; 
             smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
+            smplPlayer.playbackSpeed = 1.0f;
             yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath, calculatedDuration, smplPlayer, fps));
             Debug.Log("Pass 1 (Point Cloud Sampling) complete.");
 
@@ -988,6 +996,7 @@ public class BatchProcessor : MonoBehaviour
                     Debug.Log($"Starting Pass 2: Video Recording for '{animFileName}'.");
                     smplPlayer.IsInBatchMode = false;
                     smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
+                    smplPlayer.playbackSpeed = 1.0f;
                     yield return new WaitForSeconds(0.1f);
 
                     string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
@@ -1242,3 +1251,4 @@ public class BatchProcessor : MonoBehaviour
         }
     }
 }
+
