@@ -19,8 +19,8 @@ using UnityEditor;
 public class BatchProcessor : MonoBehaviour
 {
     [Header("Reporting Settings")]
-    [Tooltip("The name of the root GameObject in the scene that contains the environment to be reported (e.g. 'Bedroom').")]
-    public string sceneRootObjectName = "Bedroom";
+    [Tooltip("The root GameObject that contains the environment FBX. Drag it here from the hierarchy. Its name is used for reporting.")]
+    public GameObject sceneRootObject; // Changed from string to GameObject
 
     [Header("Component References")]
     public SMPLAnimationPlayer smplPlayer;
@@ -36,12 +36,16 @@ public class BatchProcessor : MonoBehaviour
     public string initialOffsetsConfigName = "animation_offsets.json";
     [Tooltip("The name of the JSON file for reading/writing the list of excluded animations.")]
     public string excludedAnimationsConfigName = "excluded_animations.json";
-    [Tooltip("Name of the environment folder inside the base output directory (e.g., 'Bathroom').")]
-    public string environmentFolderName = "bathroom";
-    [Tooltip("The specific number for the environment instance (e.g., '001' for 'Bathroom_001').")]
-    public string environmentFolderNumber = "001";
-    [Tooltip("The name of the scene folder where final offsets and output will be saved.")]
-    public string sceneFolderName = "scene1";
+    [Tooltip("Optional: Name of the environment folder. If empty, will be derived from the scene root's grandparent (e.g., 'Bedroom' from 'Bedroom_001').")]
+    public string environmentFolderName = "";
+    [Tooltip("Optional: The number for the environment instance. If empty, will be derived from the scene root's grandparent (e.g., '001' from 'Bedroom_001').")]
+    public string environmentFolderNumber = "";
+    [Tooltip("Optional: The name of the scene folder. If empty, will be derived from the scene root's parent (e.g., 'Seed1').")]
+    public string sceneFolderName = "";
+    
+    [Tooltip("Should videos be captured during the batch process?")]
+    public bool captureVideoInBatch = true;
+
     [Tooltip("Should the application quit after the batch process is complete?")]
     public bool quitOnFinish = true;
 
@@ -50,14 +54,7 @@ public class BatchProcessor : MonoBehaviour
     public LayerMask floorLayer;
 
     [Header("Dynamic Placement Settings")]
-    [Tooltip("Reference to the CharacterController on the SMPL model for collision checks.")]
-    public CharacterController characterController;
-    [Tooltip("The layers that the character should consider as obstacles.")]
-    public LayerMask placementCollisionLayerMask;
-    [Tooltip("The size of the area (in meters) to search for a valid placement, centered on the character's current position.")]
-    public Vector2 placementSearchAreaSize = new Vector2(5f, 5f);
-    [Tooltip("The distance between each test point in the search grid (in meters). Smaller values are more accurate but slower.")]
-    public float placementSearchGridDensity = 0.25f;
+
     [Tooltip("The angular step (in degrees) to test rotations during placement search. Set to 0 or less to only test the current rotation from the slider.")]
     public float placementRotationSearchStep = 10f;
 
@@ -91,6 +88,9 @@ public class BatchProcessor : MonoBehaviour
 
     void Start()
     {
+        // New: Automatically configure paths from the scene hierarchy if they are not set.
+        AutoPopulateSettingsFromHierarchy();
+
         if (smplPlayer == null || surfaceSampler == null || sceneRecorder == null)
         {
             Debug.LogError("BatchProcessor Error: SMPLPlayer, SurfaceSampler, or SceneRecorder is not assigned!");
@@ -118,6 +118,65 @@ public class BatchProcessor : MonoBehaviour
         LoadExcludedAnimations();
         LoadAnimationForTuning(0);
     }
+
+    /// <summary>
+    /// If the folder name settings are empty, this method attempts to derive them
+    /// from the scene hierarchy based on the assigned Scene Root Object.
+    /// Expected hierarchy: [EnvironmentName]_[Number] -> [SceneName] -> [Scene Root Object]
+    /// </summary>
+    private void AutoPopulateSettingsFromHierarchy()
+    {
+        if (sceneRootObject == null)
+        {
+            Debug.Log("Scene Root Object not assigned in inspector. Skipping auto-population of folder names.");
+            return;
+        }
+
+        Transform parent = sceneRootObject.transform.parent;
+        if (parent == null)
+        {
+            Debug.LogWarning("Scene Root Object has no parent. Cannot auto-populate scene folder name.");
+            return;
+        }
+
+        Transform grandparent = parent.parent;
+        if (grandparent == null)
+        {
+            Debug.LogWarning("Scene Root Object's parent has no parent. Cannot auto-populate environment folder settings.");
+            return;
+        }
+
+        // Populate Scene Folder Name (from parent)
+        if (string.IsNullOrEmpty(sceneFolderName))
+        {
+            sceneFolderName = parent.name;
+            Debug.Log($"Auto-populated Scene Folder Name from parent '{parent.name}': {sceneFolderName}");
+        }
+
+        // Populate Environment Folder Name and Number (from grandparent)
+        if (string.IsNullOrEmpty(environmentFolderName) || string.IsNullOrEmpty(environmentFolderNumber))
+        {
+            string[] grandparentNameParts = grandparent.name.Split('_');
+            if (grandparentNameParts.Length >= 2)
+            {
+                if (string.IsNullOrEmpty(environmentFolderName))
+                {
+                    environmentFolderName = grandparentNameParts[0];
+                    Debug.Log($"Auto-populated Environment Folder Name from grandparent '{grandparent.name}': {environmentFolderName}");
+                }
+                if (string.IsNullOrEmpty(environmentFolderNumber))
+                {
+                    environmentFolderNumber = grandparentNameParts[1];
+                    Debug.Log($"Auto-populated Environment Folder Number from grandparent '{grandparent.name}': {environmentFolderNumber}");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"Grandparent object '{grandparent.name}' does not follow the 'Name_Number' format. Could not auto-populate environment settings.");
+            }
+        }
+    }
+
 
     // ===================================================================
     // =========== STAGE 1: INTERACTIVE TUNING ===========================
@@ -922,22 +981,29 @@ public class BatchProcessor : MonoBehaviour
             yield return StartCoroutine(surfaceSampler.StartSampling(samplerSubfolderPath, calculatedDuration, smplPlayer, fps));
             Debug.Log("Pass 1 (Point Cloud Sampling) complete.");
 
-            if (calculatedDuration > 0)
+            if (captureVideoInBatch)
             {
-                Debug.Log($"Starting Pass 2: Video Recording for '{animFileName}'.");
-                smplPlayer.IsInBatchMode = false; 
-                smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
-                yield return new WaitForSeconds(0.1f);
+                if (calculatedDuration > 0)
+                {
+                    Debug.Log($"Starting Pass 2: Video Recording for '{animFileName}'.");
+                    smplPlayer.IsInBatchMode = false;
+                    smplPlayer.LoadAndPlayAnimation(filePath, finalOffset, finalRotation);
+                    yield return new WaitForSeconds(0.1f);
 
-                string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
-                sceneRecorder.BeginRecording(videoFilePath, fps);
-                yield return new WaitForSeconds(calculatedDuration);
-                sceneRecorder.EndRecording();
-                Debug.Log("Pass 2 (Video Recording) complete.");
+                    string videoFilePath = Path.Combine(finalOutputDirectory, animFileName + ".mp4");
+                    sceneRecorder.BeginRecording(videoFilePath, fps);
+                    yield return new WaitForSeconds(calculatedDuration);
+                    sceneRecorder.EndRecording();
+                    Debug.Log("Pass 2 (Video Recording) complete.");
+                }
+                else
+                {
+                    Debug.LogWarning($"Skipping video recording for '{animFileName}' because its duration could not be calculated.");
+                }
             }
             else
             {
-                Debug.LogWarning($"Skipping video recording for '{animFileName}' because its duration could not be calculated.");
+                Debug.Log("Skipping Pass 2 (Video Recording) because 'Capture Video In Batch' is disabled.");
             }
             
             Debug.Log($"--- Finished batch process for: {animFileName} ---");
@@ -1060,29 +1126,28 @@ public class BatchProcessor : MonoBehaviour
         report["installedPackages"] = packagesReport;
 
         JSONObject sceneObjectsReport = new JSONObject();
-        GameObject sceneRootObject = GameObject.Find(sceneRootObjectName);
-
-        if (sceneRootObject == null)
+        
+        if (this.sceneRootObject == null)
         {
-            Debug.LogError($"Scene reporting failed: Could not find the root object named '{sceneRootObjectName}'.");
-            sceneObjectsReport["error"] = $"Scene root object '{sceneRootObjectName}' not found.";
+            Debug.LogError($"Scene reporting failed: 'Scene Root Object' is not assigned in the Inspector.");
+            sceneObjectsReport["error"] = "'Scene Root Object' not assigned.";
         }
-        else if (!sceneRootObject.activeInHierarchy)
+        else if (!this.sceneRootObject.activeInHierarchy)
         {
-            Debug.LogWarning($"Scene reporting skipped: The root object '{sceneRootObjectName}' is inactive.");
-            sceneObjectsReport["status"] = $"Object '{sceneRootObjectName}' is inactive.";
+            Debug.LogWarning($"Scene reporting skipped: The root object '{this.sceneRootObject.name}' is inactive.");
+            sceneObjectsReport["status"] = $"Object '{this.sceneRootObject.name}' is inactive.";
         }
         else
         {
             JSONObject rootInfo = new JSONObject();
-            rootInfo["instanceName"] = sceneRootObject.name;
-            rootInfo["position"] = new JSONObject { ["x"] = sceneRootObject.transform.position.x, ["y"] = sceneRootObject.transform.position.y, ["z"] = sceneRootObject.transform.position.z };
-            rootInfo["rotation"] = new JSONObject { ["x"] = sceneRootObject.transform.eulerAngles.x, ["y"] = sceneRootObject.transform.eulerAngles.y, ["z"] = sceneRootObject.transform.eulerAngles.z };
-            rootInfo["scale"] = new JSONObject { ["x"] = sceneRootObject.transform.localScale.x, ["y"] = sceneRootObject.transform.localScale.y, ["z"] = sceneRootObject.transform.localScale.z };
+            rootInfo["instanceName"] = this.sceneRootObject.name;
+            rootInfo["position"] = new JSONObject { ["x"] = this.sceneRootObject.transform.position.x, ["y"] = this.sceneRootObject.transform.position.y, ["z"] = this.sceneRootObject.transform.position.z };
+            rootInfo["rotation"] = new JSONObject { ["x"] = this.sceneRootObject.transform.eulerAngles.x, ["y"] = this.sceneRootObject.transform.eulerAngles.y, ["z"] = this.sceneRootObject.transform.eulerAngles.z };
+            rootInfo["scale"] = new JSONObject { ["x"] = this.sceneRootObject.transform.localScale.x, ["y"] = this.sceneRootObject.transform.localScale.y, ["z"] = this.sceneRootObject.transform.localScale.z };
             sceneObjectsReport["rootObject"] = rootInfo;
 
             JSONArray childrenArray = new JSONArray();
-            foreach (Transform child in sceneRootObject.transform)
+            foreach (Transform child in this.sceneRootObject.transform)
             {
                 if (!child.gameObject.activeInHierarchy) continue;
 
