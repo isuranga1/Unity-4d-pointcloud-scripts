@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimized Hierarchical Point Cloud Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="container">
+        <div id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-title">Dataset Navigator</div>
+                <label for="folder-upload" class="folder-upload">📁 Load Processed Dataset Folder</label>
+                <input type="file" id="folder-upload" webkitdirectory directory>
+            </div>
+            
+            <div class="breadcrumb" id="breadcrumb">
+                <span>No dataset loaded</span>
+            </div>
+            
+            <div class="tree-container" id="tree-container">
+                <div class="tree-item" style="color: rgba(255,255,255,0.5); font-style: italic;">
+                    Load a dataset folder to begin navigation
+                </div>
+            </div>
+        </div>
+
+        <div id="main-content">
+            <div id="viewer-container">
+                <div id="canvas-container"></div>
+                
+                <div id="loading" class="loading hidden">
+                    <div class="loading-spinner"></div>
+                    <div id="loading-text">Loading...</div>
+                </div>
+
+                <div id="panel-toggles">
+                    <button class="toggle-button active" id="toggle-sidebar">📂 Sidebar</button>
+                    <button class="toggle-button active" id="toggle-panels">🎛️ Panels</button>
+                    <button class="toggle-button active" id="toggle-video">🎥 Video</button>
+                    <button class="toggle-button" id="toggle-fullscreen">🖥️ Fullscreen</button>
+                </div>
+
+                <div id="ui-overlay">
+                    <div id="info-panel" class="ui-panel">
+                        <div class="info-row">
+                            <span class="info-label">Scene:</span>
+                            <span class="info-value" id="scene-info">None</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Frame:</span>
+                            <span class="info-value" id="frame-info">0 / 0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Points:</span>
+                            <span class="info-value" id="points-info">0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Objects:</span>
+                            <span class="info-value" id="objects-info">0</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">FPS:</span>
+                            <span class="info-value" id="fps-info">0</span>
+                        </div>
+                        <button class="control-button" id="reset-view">🔄 Reset View</button>
+                    </div>
+
+                    <div id="settings-panel" class="ui-panel">
+                        <div class="slider-container">
+                            <span class="slider-label">Point Size:</span>
+                            <input type="range" class="slider" id="point-size" min="0.01" max="2" step="0.01" value="0.3">
+                            <span class="point-size-value" id="point-size-value">0.3</span>
+                        </div>
+                        <div class="slider-container">
+                            <span class="slider-label">Speed:</span>
+                            <input type="range" class="slider" id="speed-control" min="0.1" max="5" step="0.1" value="1">
+                            <span class="point-size-value" id="speed-value">1.0</span>
+                        </div>
+                        <div class="slider-container">
+                            <span class="slider-label">FPS:</span>
+                            <input type="range" class="slider" id="fps-control" min="1" max="60" step="1" value="10">
+                            <span class="point-size-value" id="fps-value">10</span>
+                        </div>
+
+                        <div class="setting-row">
+                            <span class="slider-label">Background:</span>
+                            <div class="color-swatches">
+                                <button class="color-swatch" data-color="0x000000" style="background-color: #000;"></button>
+                                <button class="color-swatch active" data-color="0x1a1a1a" style="background-color: #1a1a1a; border: 1px solid #555;"></button>
+                                <button class="color-swatch" data-color="0xffffff" style="background-color: #fff;"></button>
+                            </div>
+                        </div>
+                        
+                        <button class="control-button" id="toggle-color-mode">🎨 View: Label</button>
+                        <button class="control-button" id="toggle-wireframe">📦 Wireframe</button>
+                        <button class="control-button active" id="toggle-focus-point">🎯 Focus Point</button>
+                    </div>
+
+                    <div id="controls-panel" class="ui-panel">
+                        <button class="control-button" id="play-pause">
+                            <span id="play-icon">▶️</span>
+                            <span id="play-text">Play</span>
+                        </button>
+                        
+                        <button class="control-button" id="prev-frame">⏮️ Prev</button>
+                        <button class="control-button" id="next-frame">⏭️ Next</button>
+                        
+                        <div id="timeline-container">
+                            <div id="timeline">
+                                <div id="timeline-progress"></div>
+                                <div id="timeline-handle"></div>
+                            </div>
+                            <div class="timeline-labels">
+                                <span id="current-time">00:00</span>
+                                <span id="total-time">00:00</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="focus-hint">
+                        <b>C</b> + Click to set focus point <br>
+                        <b>Right-Click</b> + Drag to pan
+                    </div>
+                </div>
+
+                <div class="shortcut-hint">
+                    <b>H</b> - Toggle panels | <b>S</b> - Toggle sidebar | <b>V</b> - Toggle video | <b>F</b> - Fullscreen
+                </div>
+            </div>
+            
+            <div id="resizer"></div>
+
+            <div id="video-container">
+                <video id="video-player" class="hidden" muted playsinline>
+                    Your browser does not support the video tag.
+                </video>
+                <div id="video-placeholder" class="video-placeholder">
+                    Select a scene to view associated video
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
